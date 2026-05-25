@@ -517,7 +517,7 @@ function SetPicker({
   useEffect(() => {
     if (!cmdSet) return
     setDecksLoading(true)
-    fetch(`${MARKET_API}/v1/sets/${game}/${cmdSet.code.toLowerCase()}/sealed`)
+    fetch(`${MARKET_API}/v1/sets/${game}/${encodeURIComponent(cmdSet.code)}/sealed`)
       .then(r => r.json())
       .then((d: { sealed: SealedProduct[] }) =>
         setDecks((d.sealed ?? []).filter(p => p.product_type === 'commander_deck')),
@@ -575,7 +575,7 @@ function SetPicker({
     setSearch('')
     setOpen(false)
     setDropPos(null)
-    onSelect(s.code.toUpperCase(), s.name, s.game)
+    onSelect(s.code, s.name, s.game)
   }
 
   const handlePickCmdSet = (s: MarketSet) => {
@@ -590,7 +590,7 @@ function SetPicker({
     setSearch('')
     setOpen(false)
     setDropPos(null)
-    onSelect(s.code.toUpperCase(), s.name, s.game, deck?.name)
+    onSelect(s.code, s.name, s.game, deck?.name)
   }
 
   const filteredSets = sets.filter(s => {
