@@ -547,11 +547,202 @@ function CardRow({ card }: { card: BreakCard }) {
   )
 }
 
+// ─── Set Picker ──────────────────────────────────────────────────────────────
+
+const MARKET_API = 'https://market.futuregadgetlabs.com'
+
+interface MarketSet {
+  id: string
+  game: string
+  code: string
+  name: string
+  release_date: string
+  card_count: number
+  image_url: string
+}
+
+function SetPicker({
+  selectedCode,
+  onSelect,
+}: {
+  selectedCode: string
+  onSelect: (code: string, name: string, game: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [game, setGame] = useState<'mtg' | 'pokemon'>('mtg')
+  const [search, setSearch] = useState('')
+  const [sets, setSets] = useState<MarketSet[]>([])
+  const [loading, setLoading] = useState(false)
+  const [selectedName, setSelectedName] = useState('')
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Load sets whenever game tab switches
+  useEffect(() => {
+    setLoading(true)
+    fetch(`${MARKET_API}/v1/sets?game=${game}`)
+      .then(r => r.json())
+      .then((d: { sets: MarketSet[] }) => setSets(d.sets ?? []))
+      .catch(() => setSets([]))
+      .finally(() => setLoading(false))
+  }, [game])
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const filtered = sets.filter(s => {
+    const q = search.toLowerCase()
+    return !q || s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)
+  })
+
+  const handleSelect = (s: MarketSet) => {
+    setSelectedName(s.name)
+    setSearch('')
+    setOpen(false)
+    onSelect(s.code.toUpperCase(), s.name, s.game)
+  }
+
+  const handleClear = () => {
+    setSelectedName('')
+    setSearch('')
+    onSelect('', '', game)
+  }
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative' }}>
+      {/* Trigger button */}
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: selectedCode ? 'rgba(99,102,241,0.15)' : 'var(--surface-2)',
+          border: `1px solid ${selectedCode ? 'var(--primary)' : 'var(--border)'}`,
+          borderRadius: 6, color: 'var(--text)', padding: '5px 10px',
+          fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', minWidth: 180,
+        }}
+      >
+        <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {selectedCode
+            ? <><span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{selectedCode} · </span>{selectedName}</>
+            : <span style={{ color: 'var(--text-dim)' }}>Select a set…</span>}
+        </span>
+        <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>{open ? '▲' : '▼'}</span>
+      </button>
+
+      {/* Dropdown */}
+      {open && (
+        <div
+          style={{
+            position: 'absolute', top: 'calc(100% + 4px)', left: 0,
+            width: 360, zIndex: 999,
+            background: 'var(--surface)', border: '1px solid var(--border)',
+            borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+            display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          }}
+        >
+          {/* Game tabs */}
+          <div style={{ display: 'flex', borderBottom: '1px solid var(--border)' }}>
+            {(['mtg', 'pokemon'] as const).map(g => (
+              <button
+                key={g}
+                onClick={() => { setGame(g); setSearch('') }}
+                style={{
+                  flex: 1, padding: '7px 0', background: 'none',
+                  border: 'none', borderBottom: game === g ? '2px solid var(--primary)' : '2px solid transparent',
+                  color: game === g ? 'var(--primary)' : 'var(--text-dim)',
+                  fontWeight: game === g ? 700 : 400, fontSize: 12, cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                {g === 'mtg' ? 'Magic: The Gathering' : 'Pokémon'}
+              </button>
+            ))}
+          </div>
+
+          {/* Search */}
+          <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)' }}>
+            <input
+              autoFocus
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search by name or code…"
+              style={{
+                width: '100%', background: 'var(--bg)', border: '1px solid var(--border)',
+                borderRadius: 5, color: 'var(--text)', padding: '5px 8px', fontSize: 12,
+                fontFamily: 'inherit',
+              }}
+            />
+          </div>
+
+          {/* Set list */}
+          <div style={{ overflowY: 'auto', maxHeight: 320 }}>
+            {loading && (
+              <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>Loading…</div>
+            )}
+            {!loading && filtered.length === 0 && (
+              <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>No sets found</div>
+            )}
+            {!loading && filtered.map(s => (
+              <div
+                key={s.id}
+                onClick={() => handleSelect(s)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '8px 12px', cursor: 'pointer',
+                  background: s.code.toUpperCase() === selectedCode ? 'rgba(99,102,241,0.12)' : 'transparent',
+                  borderLeft: s.code.toUpperCase() === selectedCode ? '2px solid var(--primary)' : '2px solid transparent',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.05)')}
+                onMouseLeave={e => (e.currentTarget.style.background = s.code.toUpperCase() === selectedCode ? 'rgba(99,102,241,0.12)' : 'transparent')}
+              >
+                {s.image_url && (
+                  <img src={s.image_url} alt="" style={{ width: 20, height: 20, objectFit: 'contain', flexShrink: 0, opacity: 0.8 }} />
+                )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                    {s.code.toUpperCase()} · {s.card_count} cards · {s.release_date.slice(0, 7)}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Clear */}
+          {selectedCode && (
+            <div style={{ padding: '8px 12px', borderTop: '1px solid var(--border)' }}>
+              <button
+                onClick={handleClear}
+                style={{
+                  width: '100%', background: 'none', border: '1px solid var(--border)',
+                  borderRadius: 5, color: 'var(--text-dim)', padding: '4px 0',
+                  fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >
+                Clear set filter
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
   const [entries, setEntries] = useState<BreakEntry[]>([])
   const [setCode, setSetCode] = useState('')
+  const [setName, setSetName] = useState('')
 
   // Stable refs — never go stale in async callbacks
   const entriesRef = useRef<BreakEntry[]>([])
@@ -712,21 +903,20 @@ export default function App() {
         <h1 style={{ fontSize: 16, fontWeight: 700, color: 'var(--primary)', marginRight: 8 }}>
           Box Break Scanner
         </h1>
-        <input
-          value={setCode}
-          onChange={e => setSetCode(e.target.value)}
-          placeholder="Set code e.g. TMC"
-          style={{
-            background: 'var(--bg)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            color: 'var(--text)',
-            padding: '5px 10px',
-            fontSize: 13,
-            width: 160,
+        <SetPicker
+          selectedCode={setCode}
+          onSelect={(code, name) => {
+            setSetCode(code)
+            setSetName(name)
+            setCodeRef.current = code
           }}
         />
-        <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
+        {setName && (
+          <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>
+            · identifications restricted to {setName}
+          </span>
+        )}
+        <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>
           {completedCount} / {entries.length} processed
         </span>
         <div style={{ flex: 1 }} />
