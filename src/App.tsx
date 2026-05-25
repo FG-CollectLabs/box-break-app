@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -576,10 +577,9 @@ function SetPicker({
   const [selectedName, setSelectedName] = useState('')
   const btnRef = useRef<HTMLButtonElement>(null)
   const dropRef = useRef<HTMLDivElement>(null)
-  // Fixed position of the dropdown (recalculated on open)
-  const [dropPos, setDropPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
+  // null until the button position is measured — prevents rendering at 0,0
+  const [dropPos, setDropPos] = useState<{ top: number; left: number } | null>(null)
 
-  // Load sets whenever game tab switches
   useEffect(() => {
     setLoading(true)
     fetch(`${MARKET_API}/v1/sets?game=${game}`)
@@ -589,17 +589,13 @@ function SetPicker({
       .finally(() => setLoading(false))
   }, [game])
 
-  // Close on outside click
   useEffect(() => {
     if (!open) return
     const handler = (e: MouseEvent) => {
-      if (
-        btnRef.current && btnRef.current.contains(e.target as Node)
-      ) return
-      if (
-        dropRef.current && dropRef.current.contains(e.target as Node)
-      ) return
+      if (btnRef.current?.contains(e.target as Node)) return
+      if (dropRef.current?.contains(e.target as Node)) return
       setOpen(false)
+      setSearch('')
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -610,18 +606,29 @@ function SetPicker({
     return !q || s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)
   })
 
+  const handleGameSwitch = (g: 'mtg' | 'pokemon') => {
+    setGame(g)
+    setSearch('')
+    if (selectedCode) {
+      setSelectedName('')
+      onSelect('', '', g)
+    }
+  }
+
   const handleToggle = () => {
     if (!open && btnRef.current) {
       const rect = btnRef.current.getBoundingClientRect()
       setDropPos({ top: rect.bottom + 4, left: rect.left })
     }
     setOpen(o => !o)
+    if (open) setSearch('')
   }
 
   const handleSelect = (s: MarketSet) => {
     setSelectedName(s.name)
     setSearch('')
     setOpen(false)
+    setDropPos(null)
     onSelect(s.code.toUpperCase(), s.name, s.game)
   }
 
@@ -631,9 +638,127 @@ function SetPicker({
     onSelect('', '', game)
   }
 
+  const dropdown = dropPos && (
+    <div
+      ref={dropRef}
+      style={{
+        position: 'fixed',
+        top: dropPos.top,
+        left: dropPos.left,
+        width: 360,
+        maxHeight: 440,
+        zIndex: 9999,
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }}
+    >
+      {/* Search */}
+      <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+        <input
+          autoFocus
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search by name or code…"
+          style={{
+            width: '100%', background: 'var(--bg)', border: '1px solid var(--border)',
+            borderRadius: 5, color: 'var(--text)', padding: '5px 8px', fontSize: 12,
+            fontFamily: 'inherit',
+          }}
+        />
+      </div>
+
+      {/* Set list */}
+      <div style={{ overflowY: 'auto', flex: 1 }}>
+        {loading && (
+          <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>Loading…</div>
+        )}
+        {!loading && filtered.length === 0 && (
+          <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>No sets found</div>
+        )}
+        {!loading && filtered.map(s => (
+          <div
+            key={s.id}
+            onClick={() => handleSelect(s)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '8px 12px', cursor: 'pointer',
+              background: s.code.toUpperCase() === selectedCode ? 'rgba(99,102,241,0.12)' : 'transparent',
+              borderLeft: s.code.toUpperCase() === selectedCode ? '2px solid var(--primary)' : '2px solid transparent',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.05)')}
+            onMouseLeave={e => (e.currentTarget.style.background = s.code.toUpperCase() === selectedCode ? 'rgba(99,102,241,0.12)' : 'transparent')}
+          >
+            {s.image_url && (
+              <img src={s.image_url} alt="" style={{ width: 20, height: 20, objectFit: 'contain', flexShrink: 0, opacity: 0.8 }} />
+            )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                {s.code.toUpperCase()} · {s.card_count} cards · {s.release_date.slice(0, 7)}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Clear */}
+      {selectedCode && (
+        <div style={{ padding: '8px 12px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+          <button
+            onClick={handleClear}
+            style={{
+              width: '100%', background: 'none', border: '1px solid var(--border)',
+              borderRadius: 5, color: 'var(--text-dim)', padding: '4px 0',
+              fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            Clear set filter
+          </button>
+        </div>
+      )}
+    </div>
+  )
+
   return (
-    <div style={{ position: 'relative' }}>
-      {/* Trigger button */}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {/* Game selector — always visible */}
+      <div
+        style={{
+          display: 'flex',
+          background: 'var(--surface-2)',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          overflow: 'hidden',
+          flexShrink: 0,
+        }}
+      >
+        {(['mtg', 'pokemon'] as const).map(g => (
+          <button
+            key={g}
+            onClick={() => handleGameSwitch(g)}
+            style={{
+              padding: '5px 10px',
+              background: game === g ? 'var(--primary)' : 'transparent',
+              border: 'none',
+              color: game === g ? '#fff' : 'var(--text-dim)',
+              fontWeight: game === g ? 700 : 400,
+              fontSize: 12,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+              transition: 'background 0.1s',
+            }}
+          >
+            {g === 'mtg' ? 'MTG' : 'Pokémon'}
+          </button>
+        ))}
+      </div>
+
+      {/* Set picker trigger */}
       <button
         ref={btnRef}
         onClick={handleToggle}
@@ -642,7 +767,7 @@ function SetPicker({
           background: selectedCode ? 'rgba(99,102,241,0.15)' : 'var(--surface-2)',
           border: `1px solid ${selectedCode ? 'var(--primary)' : 'var(--border)'}`,
           borderRadius: 6, color: 'var(--text)', padding: '5px 10px',
-          fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', minWidth: 180,
+          fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', minWidth: 160,
           fontFamily: 'inherit',
         }}
       >
@@ -654,105 +779,8 @@ function SetPicker({
         <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>{open ? '▲' : '▼'}</span>
       </button>
 
-      {/* Dropdown — position:fixed to escape overflow:hidden parents */}
-      {open && (
-        <div
-          ref={dropRef}
-          style={{
-            position: 'fixed',
-            top: dropPos.top,
-            left: dropPos.left,
-            width: 360, zIndex: 9999,
-            background: 'var(--surface)', border: '1px solid var(--border)',
-            borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-            display: 'flex', flexDirection: 'column', overflow: 'hidden',
-          }}
-        >
-          {/* Game tabs */}
-          <div style={{ display: 'flex', borderBottom: '1px solid var(--border)' }}>
-            {(['mtg', 'pokemon'] as const).map(g => (
-              <button
-                key={g}
-                onClick={() => { setGame(g); setSearch('') }}
-                style={{
-                  flex: 1, padding: '7px 0', background: 'none',
-                  border: 'none', borderBottom: game === g ? '2px solid var(--primary)' : '2px solid transparent',
-                  color: game === g ? 'var(--primary)' : 'var(--text-dim)',
-                  fontWeight: game === g ? 700 : 400, fontSize: 12, cursor: 'pointer',
-                  fontFamily: 'inherit',
-                }}
-              >
-                {g === 'mtg' ? 'Magic: The Gathering' : 'Pokémon'}
-              </button>
-            ))}
-          </div>
-
-          {/* Search */}
-          <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)' }}>
-            <input
-              autoFocus
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search by name or code…"
-              style={{
-                width: '100%', background: 'var(--bg)', border: '1px solid var(--border)',
-                borderRadius: 5, color: 'var(--text)', padding: '5px 8px', fontSize: 12,
-                fontFamily: 'inherit',
-              }}
-            />
-          </div>
-
-          {/* Set list */}
-          <div style={{ overflowY: 'auto', maxHeight: 320 }}>
-            {loading && (
-              <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>Loading…</div>
-            )}
-            {!loading && filtered.length === 0 && (
-              <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>No sets found</div>
-            )}
-            {!loading && filtered.map(s => (
-              <div
-                key={s.id}
-                onClick={() => handleSelect(s)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 10,
-                  padding: '8px 12px', cursor: 'pointer',
-                  background: s.code.toUpperCase() === selectedCode ? 'rgba(99,102,241,0.12)' : 'transparent',
-                  borderLeft: s.code.toUpperCase() === selectedCode ? '2px solid var(--primary)' : '2px solid transparent',
-                }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.05)')}
-                onMouseLeave={e => (e.currentTarget.style.background = s.code.toUpperCase() === selectedCode ? 'rgba(99,102,241,0.12)' : 'transparent')}
-              >
-                {s.image_url && (
-                  <img src={s.image_url} alt="" style={{ width: 20, height: 20, objectFit: 'contain', flexShrink: 0, opacity: 0.8 }} />
-                )}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-                    {s.code.toUpperCase()} · {s.card_count} cards · {s.release_date.slice(0, 7)}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Clear */}
-          {selectedCode && (
-            <div style={{ padding: '8px 12px', borderTop: '1px solid var(--border)' }}>
-              <button
-                onClick={handleClear}
-                style={{
-                  width: '100%', background: 'none', border: '1px solid var(--border)',
-                  borderRadius: 5, color: 'var(--text-dim)', padding: '4px 0',
-                  fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
-                }}
-              >
-                Clear set filter
-              </button>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Dropdown rendered in document.body via portal — escapes all overflow/z-index issues */}
+      {open && createPortal(dropdown, document.body)}
     </div>
   )
 }
