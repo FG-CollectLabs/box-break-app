@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Box Break Scanner</title>
+    <style>
+      :root {
+        --bg: #0d0d0f;
+        --surface: #18181c;
+        --surface-2: #222228;
+        --border: #2e2e38;
+        --text: #e8e8f0;
+        --text-dim: #888899;
+        --primary: #6366f1;
+        --primary-dim: #4145b0;
+        --danger: #ef4444;
+        --success: #22c55e;
+        --warning: #f59e0b;
+        --purple: #a855f7;
+      }
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body, #root { height: 100%; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        font-size: 14px;
+      }
+      button {
+        font-family: inherit;
+        cursor: pointer;
+      }
+      input {
+        font-family: inherit;
+      }
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
+      ::-webkit-scrollbar-track { background: var(--bg); }
+      ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
