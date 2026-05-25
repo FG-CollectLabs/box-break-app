@@ -1,5 +1,37 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, Component } from 'react'
+import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+
+// ─── Error Boundary ───────────────────────────────────────────────────────────
+
+export class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null }
+  static getDerivedStateFromError(error: Error) { return { error } }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          padding: 32, color: '#ef4444', fontFamily: 'monospace',
+          background: '#18181c', height: '100%', overflow: 'auto',
+        }}>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>App crashed</div>
+          <pre style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>
+            {(this.state.error as Error).message}
+            {'\n\n'}
+            {(this.state.error as Error).stack}
+          </pre>
+          <button
+            onClick={() => this.setState({ error: null })}
+            style={{ marginTop: 16, padding: '6px 16px', background: '#ef4444', border: 'none', borderRadius: 6, color: '#fff', cursor: 'pointer' }}
+          >
+            Retry
+          </button>
+        </div>
+      )
+    }
+    return this.props.children as ReactNode
+  }
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -660,7 +692,6 @@ function SetPicker({
       {/* Search */}
       <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
         <input
-          autoFocus
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder="Search by name or code…"
