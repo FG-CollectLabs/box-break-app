@@ -574,7 +574,10 @@ function SetPicker({
   const [sets, setSets] = useState<MarketSet[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedName, setSelectedName] = useState('')
-  const containerRef = useRef<HTMLDivElement>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const dropRef = useRef<HTMLDivElement>(null)
+  // Fixed position of the dropdown (recalculated on open)
+  const [dropPos, setDropPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
 
   // Load sets whenever game tab switches
   useEffect(() => {
@@ -590,9 +593,13 @@ function SetPicker({
   useEffect(() => {
     if (!open) return
     const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false)
-      }
+      if (
+        btnRef.current && btnRef.current.contains(e.target as Node)
+      ) return
+      if (
+        dropRef.current && dropRef.current.contains(e.target as Node)
+      ) return
+      setOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -602,6 +609,14 @@ function SetPicker({
     const q = search.toLowerCase()
     return !q || s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)
   })
+
+  const handleToggle = () => {
+    if (!open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      setDropPos({ top: rect.bottom + 4, left: rect.left })
+    }
+    setOpen(o => !o)
+  }
 
   const handleSelect = (s: MarketSet) => {
     setSelectedName(s.name)
@@ -617,16 +632,18 @@ function SetPicker({
   }
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
+    <div style={{ position: 'relative' }}>
       {/* Trigger button */}
       <button
-        onClick={() => setOpen(o => !o)}
+        ref={btnRef}
+        onClick={handleToggle}
         style={{
           display: 'flex', alignItems: 'center', gap: 8,
           background: selectedCode ? 'rgba(99,102,241,0.15)' : 'var(--surface-2)',
           border: `1px solid ${selectedCode ? 'var(--primary)' : 'var(--border)'}`,
           borderRadius: 6, color: 'var(--text)', padding: '5px 10px',
           fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', minWidth: 180,
+          fontFamily: 'inherit',
         }}
       >
         <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -637,12 +654,15 @@ function SetPicker({
         <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>{open ? '▲' : '▼'}</span>
       </button>
 
-      {/* Dropdown */}
+      {/* Dropdown — position:fixed to escape overflow:hidden parents */}
       {open && (
         <div
+          ref={dropRef}
           style={{
-            position: 'absolute', top: 'calc(100% + 4px)', left: 0,
-            width: 360, zIndex: 999,
+            position: 'fixed',
+            top: dropPos.top,
+            left: dropPos.left,
+            width: 360, zIndex: 9999,
             background: 'var(--surface)', border: '1px solid var(--border)',
             borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
             display: 'flex', flexDirection: 'column', overflow: 'hidden',
