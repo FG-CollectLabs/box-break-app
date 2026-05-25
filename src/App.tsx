@@ -13,20 +13,12 @@ export class ErrorBoundary extends Component<
   render() {
     if (this.state.error) {
       return (
-        <div style={{
-          padding: 32, color: '#ef4444', fontFamily: 'monospace',
-          background: '#0d0d0f', height: '100%', overflow: 'auto',
-        }}>
+        <div style={{ padding: 32, color: '#ef4444', fontFamily: 'monospace', background: '#0d0d0f', height: '100%', overflow: 'auto' }}>
           <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>App crashed</div>
           <pre style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>
-            {(this.state.error as Error).message}
-            {'\n\n'}
-            {(this.state.error as Error).stack}
+            {(this.state.error as Error).message}{'\n\n'}{(this.state.error as Error).stack}
           </pre>
-          <button
-            onClick={() => this.setState({ error: null })}
-            style={{ marginTop: 16, padding: '6px 16px', background: '#ef4444', border: 'none', borderRadius: 6, color: '#fff', cursor: 'pointer' }}
-          >
+          <button onClick={() => this.setState({ error: null })} style={{ marginTop: 16, padding: '6px 16px', background: '#ef4444', border: 'none', borderRadius: 6, color: '#fff', cursor: 'pointer' }}>
             Retry
           </button>
         </div>
@@ -37,6 +29,15 @@ export class ErrorBoundary extends Component<
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
+
+interface ApiCandidate {
+  tcgplayer_product_id: number
+  image_url: string
+  phash: string
+  hamming_distance: number
+  name: string
+  set_name: string
+}
 
 interface BreakEntry {
   id: string
@@ -51,6 +52,7 @@ interface BreakEntry {
   cardNumber?: string
   setName?: string
   candidateImageUrl?: string
+  allCandidates?: ApiCandidate[]
   pairedFrontId?: string
   errorMsg?: string
   overrideName?: string
@@ -68,15 +70,6 @@ interface BreakCard {
   cardNumber?: string
   setName?: string
   instances: BreakInstance[]
-}
-
-interface ApiCandidate {
-  tcgplayer_product_id: number
-  image_url: string
-  phash: string
-  hamming_distance: number
-  name: string
-  set_name: string
 }
 
 interface ApiResponse {
@@ -131,26 +124,16 @@ async function callIdentifyApi(file: File, setCode: string): Promise<ApiResponse
 function groupEntries(entries: BreakEntry[]): BreakCard[] {
   const byId = new Map<string, BreakEntry>()
   for (const e of entries) byId.set(e.id, e)
-
   const cards = new Map<string, BreakCard>()
-
   for (const entry of entries) {
     if (entry.status !== 'done') continue
     const displayName = entry.overrideName ?? entry.cardName ?? 'Unknown'
     const key = entry.tcgplayerId ? entry.tcgplayerId.toString() : displayName
     if (!cards.has(key)) {
-      cards.set(key, {
-        key,
-        tcgplayerId: entry.tcgplayerId,
-        cardName: displayName,
-        cardNumber: entry.cardNumber,
-        setName: entry.setName,
-        instances: [],
-      })
+      cards.set(key, { key, tcgplayerId: entry.tcgplayerId, cardName: displayName, cardNumber: entry.cardNumber, setName: entry.setName, instances: [] })
     }
     cards.get(key)!.instances.push({ front: entry, back: undefined })
   }
-
   for (const entry of entries) {
     if (entry.status !== 'back_detected' || !entry.pairedFrontId) continue
     const front = byId.get(entry.pairedFrontId)
@@ -162,30 +145,17 @@ function groupEntries(entries: BreakEntry[]): BreakCard[] {
     const inst = card.instances.find(i => i.front.id === front.id)
     if (inst && !inst.back) inst.back = entry
   }
-
   return Array.from(cards.values())
 }
 
 function buildCSV(entries: BreakEntry[]): string {
   const cards = groupEntries(entries)
-  const rows: string[] = [
-    'card_name,card_number,set_name,tcgplayer_id,quantity,front_image_urls,back_image_urls',
-  ]
+  const rows: string[] = ['card_name,card_number,set_name,tcgplayer_id,quantity,front_image_urls,back_image_urls']
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`
   for (const card of cards) {
     const fronts = card.instances.map(i => i.front.scanUrl ?? '').join('|')
     const backs = card.instances.map(i => i.back?.scanUrl ?? '').join('|')
-    rows.push(
-      [
-        q(card.cardName),
-        q(card.cardNumber ?? ''),
-        q(card.setName ?? ''),
-        card.tcgplayerId?.toString() ?? '',
-        card.instances.length.toString(),
-        q(fronts),
-        q(backs),
-      ].join(','),
-    )
+    rows.push([q(card.cardName), q(card.cardNumber ?? ''), q(card.setName ?? ''), card.tcgplayerId?.toString() ?? '', card.instances.length.toString(), q(fronts), q(backs)].join(','))
   }
   return rows.join('\n')
 }
@@ -212,15 +182,138 @@ function StatusChip({ status }: { status: BreakEntry['status'] }) {
   }
   const { label, color } = map[status]
   return (
-    <span
-      style={{
-        fontSize: 11, fontWeight: 600, color,
-        background: color + '22', border: `1px solid ${color}44`,
-        borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap',
-      }}
-    >
+    <span style={{ fontSize: 11, fontWeight: 600, color, background: color + '22', border: `1px solid ${color}44`, borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap' }}>
       {label}
     </span>
+  )
+}
+
+// ─── Correction Panel ─────────────────────────────────────────────────────────
+
+function CorrectionPanel({
+  entry,
+  onSelect,
+  onOverride,
+  onClose,
+}: {
+  entry: BreakEntry
+  onSelect: (candidate: ApiCandidate) => void
+  onOverride: (name: string) => void
+  onClose: () => void
+}) {
+  const [search, setSearch] = useState('')
+  const [overrideVal, setOverrideVal] = useState(entry.overrideName ?? entry.cardName ?? '')
+  const inputRef = useRef<HTMLInputElement>(null)
+  const candidates = entry.allCandidates ?? []
+
+  const filtered = candidates.filter(c =>
+    !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.set_name.toLowerCase().includes(search.toLowerCase())
+  )
+
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { onClose(); return }
+      const n = parseInt(e.key)
+      if (!isNaN(n) && n >= 1 && n <= 9) {
+        const c = filtered[n - 1]
+        if (c) onSelect(c)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [filtered, onSelect, onClose])
+
+  return (
+    <div style={{ background: 'var(--surface-2)', border: '1px solid var(--primary)', borderRadius: 8, padding: 12, marginTop: 6 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          Correct Identification
+        </span>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', fontSize: 16, cursor: 'pointer', lineHeight: 1, padding: '0 2px' }}>×</button>
+      </div>
+
+      {/* Large scan image + candidates side by side */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
+        {/* Scan preview */}
+        <div style={{ flexShrink: 0 }}>
+          <img
+            src={entry.previewUrl}
+            alt="scan"
+            style={{ width: 96, height: 134, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)', display: 'block' }}
+          />
+          <div style={{ fontSize: 9, color: 'var(--text-dim)', textAlign: 'center', marginTop: 3 }}>Scanned</div>
+        </div>
+
+        {/* Candidates grid */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <input
+            ref={inputRef}
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search candidates… (1-9 to pick)"
+            style={{ width: '100%', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '4px 8px', fontSize: 11, fontFamily: 'inherit', marginBottom: 8 }}
+          />
+          {candidates.length === 0 ? (
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', padding: '8px 0' }}>No candidates from API</div>
+          ) : (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 200, overflowY: 'auto' }}>
+              {filtered.map((c, i) => (
+                <div
+                  key={c.tcgplayer_product_id}
+                  onClick={() => onSelect(c)}
+                  title={`${c.name} — ${c.set_name}`}
+                  style={{ cursor: 'pointer', border: '1px solid var(--border)', borderRadius: 5, overflow: 'hidden', width: 68, flexShrink: 0, position: 'relative' }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--primary)' }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)' }}
+                >
+                  {/* Shortcut badge */}
+                  {i < 9 && (
+                    <div style={{ position: 'absolute', top: 2, left: 2, background: 'rgba(0,0,0,0.7)', color: '#fff', fontSize: 9, fontWeight: 700, borderRadius: 3, padding: '0 3px', lineHeight: '14px' }}>
+                      {i + 1}
+                    </div>
+                  )}
+                  <img
+                    src={c.image_url}
+                    alt=""
+                    onError={e => { e.currentTarget.style.display = 'none' }}
+                    style={{ width: 66, height: 92, objectFit: 'cover', display: 'block' }}
+                  />
+                  <div style={{ padding: '3px 4px', background: 'var(--surface-2)' }}>
+                    <div style={{ fontSize: 9, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>{c.name}</div>
+                    <div style={{ fontSize: 9, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.set_name}</div>
+                  </div>
+                </div>
+              ))}
+              {filtered.length === 0 && (
+                <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>No matches</div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Manual override */}
+      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', gap: 6 }}>
+        <input
+          value={overrideVal}
+          onChange={e => setOverrideVal(e.target.value)}
+          placeholder="Or type card name manually…"
+          style={{ flex: 1, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '4px 8px', fontSize: 11, fontFamily: 'inherit' }}
+        />
+        <button
+          onClick={() => { onOverride(overrideVal); onClose() }}
+          style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '4px 10px', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}
+        >
+          Set name
+        </button>
+      </div>
+      <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 4 }}>Press 1–9 to select candidate · Esc to close</div>
+    </div>
   )
 }
 
@@ -229,63 +322,89 @@ function StatusChip({ status }: { status: BreakEntry['status'] }) {
 function QueueItem({
   entry,
   onOverride,
+  onCorrect,
 }: {
   entry: BreakEntry
   onOverride: (id: string, name: string) => void
+  onCorrect: (id: string, candidate: ApiCandidate) => void
 }) {
-  const [editVal, setEditVal] = useState(entry.overrideName ?? entry.cardName ?? '')
-
-  useEffect(() => {
-    setEditVal(entry.overrideName ?? entry.cardName ?? '')
-  }, [entry.overrideName, entry.cardName])
-
-  const showReview =
-    entry.status === 'done' && (entry.needsReview === true || entry.confidence === 'medium')
+  const [correcting, setCorrecting] = useState(false)
+  const canCorrect = entry.status === 'done' || (entry.status === 'back_detected' && !!entry.pairedFrontId)
 
   return (
-    <div style={{ display: 'flex', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--border)', alignItems: 'flex-start' }}>
-      <img
-        src={entry.previewUrl}
-        alt=""
-        style={{ width: 56, height: 78, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', flexShrink: 0 }}
-      />
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={entry.file.name}>
-          {entry.file.name}
-        </div>
-        <StatusChip status={entry.status} />
-        {entry.status === 'done' && entry.cardName && (
-          <div style={{ fontSize: 11, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={entry.overrideName ?? entry.cardName}>
-            {entry.overrideName ?? entry.cardName}
+    <div style={{ padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+        {/* Larger scan preview */}
+        <img
+          src={entry.previewUrl}
+          alt=""
+          style={{ width: 80, height: 112, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', flexShrink: 0 }}
+        />
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={entry.file.name}>
+            {entry.file.name}
           </div>
-        )}
-        {entry.status === 'back_detected' && (
-          <div style={{ fontSize: 11, color: 'var(--purple)' }}>
-            {entry.pairedFrontId ? 'Paired with front' : 'No front to pair'}
-          </div>
-        )}
-        {entry.status === 'error' && entry.errorMsg && (
-          <div style={{ fontSize: 11, color: 'var(--danger)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={entry.errorMsg}>
-            {entry.errorMsg}
-          </div>
-        )}
-        {showReview && (
-          <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 2 }}>
-            <input
-              value={editVal}
-              onChange={e => setEditVal(e.target.value)}
-              placeholder="Override card name…"
-              style={{ flex: 1, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', padding: '2px 6px', fontSize: 11, minWidth: 0 }}
-            />
+          <StatusChip status={entry.status} />
+          {entry.status === 'done' && entry.cardName && (
+            <div style={{ fontSize: 11, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={entry.overrideName ?? entry.cardName}>
+              {entry.overrideName ? <em>{entry.overrideName}</em> : entry.cardName}
+            </div>
+          )}
+          {entry.status === 'done' && entry.setName && (
+            <div style={{ fontSize: 10, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {entry.setName}
+            </div>
+          )}
+          {entry.status === 'back_detected' && (
+            <div style={{ fontSize: 11, color: 'var(--purple)' }}>
+              {entry.pairedFrontId ? 'Paired with front' : 'No front found'}
+            </div>
+          )}
+          {entry.status === 'error' && entry.errorMsg && (
+            <div style={{ fontSize: 11, color: 'var(--danger)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={entry.errorMsg}>
+              {entry.errorMsg}
+            </div>
+          )}
+          {/* Correct button */}
+          {canCorrect && (
             <button
-              onClick={() => onOverride(entry.id, editVal)}
-              style={{ background: 'var(--primary)', border: 'none', borderRadius: 4, color: '#fff', padding: '2px 8px', fontSize: 11, flexShrink: 0 }}
+              onClick={() => setCorrecting(c => !c)}
+              style={{
+                background: correcting ? 'rgba(99,102,241,0.2)' : 'var(--surface-2)',
+                border: `1px solid ${correcting ? 'var(--primary)' : 'var(--border)'}`,
+                borderRadius: 4, color: correcting ? 'var(--primary)' : 'var(--text-dim)',
+                padding: '2px 8px', fontSize: 10, cursor: 'pointer', fontFamily: 'inherit',
+                alignSelf: 'flex-start', marginTop: 2,
+              }}
             >
-              Set
+              {correcting ? 'Close' : '✎ Correct'}
             </button>
+          )}
+        </div>
+
+        {/* Candidate thumbnail (if available) */}
+        {entry.status === 'done' && entry.candidateImageUrl && (
+          <div style={{ flexShrink: 0, textAlign: 'center' }}>
+            <img
+              src={entry.candidateImageUrl}
+              alt=""
+              onError={e => { e.currentTarget.style.display = 'none' }}
+              style={{ width: 60, height: 84, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', display: 'block' }}
+            />
+            <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 2 }}>Match</div>
           </div>
         )}
       </div>
+
+      {/* Correction panel */}
+      {correcting && (
+        <CorrectionPanel
+          entry={entry}
+          onSelect={c => { onCorrect(entry.id, c); setCorrecting(false) }}
+          onOverride={name => { onOverride(entry.id, name); setCorrecting(false) }}
+          onClose={() => setCorrecting(false)}
+        />
+      )}
     </div>
   )
 }
@@ -308,25 +427,17 @@ function DropZone({ onFiles }: { onFiles: (files: File[]) => void }) {
       onDragLeave={() => setDragging(false)}
       onDrop={e => { e.preventDefault(); setDragging(false); handleFileList(e.dataTransfer.files) }}
       onClick={() => inputRef.current?.click()}
-      style={{
-        border: `2px dashed ${dragging ? 'var(--primary)' : 'var(--border)'}`,
-        borderRadius: 8, padding: '24px 16px', textAlign: 'center',
-        background: dragging ? '#6366f111' : 'var(--surface)',
-        transition: 'border-color 0.15s, background 0.15s', cursor: 'pointer',
-      }}
+      style={{ border: `2px dashed ${dragging ? 'var(--primary)' : 'var(--border)'}`, borderRadius: 8, padding: '20px 16px', textAlign: 'center', background: dragging ? '#6366f111' : 'var(--surface)', transition: 'border-color 0.15s, background 0.15s', cursor: 'pointer' }}
     >
-      <div style={{ fontSize: 28, marginBottom: 8 }}>📂</div>
-      <div style={{ color: 'var(--text-dim)', fontSize: 13, marginBottom: 8 }}>Drop card scans here</div>
+      <div style={{ fontSize: 24, marginBottom: 6 }}>📂</div>
+      <div style={{ color: 'var(--text-dim)', fontSize: 12, marginBottom: 8 }}>Drop card scans here</div>
       <button
         onClick={e => { e.stopPropagation(); inputRef.current?.click() }}
-        style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '6px 16px', fontSize: 13 }}
+        style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '5px 14px', fontSize: 12 }}
       >
         Browse…
       </button>
-      <input
-        ref={inputRef} type="file" accept="image/*" multiple style={{ display: 'none' }}
-        onChange={e => { handleFileList(e.target.files); e.target.value = '' }}
-      />
+      <input ref={inputRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => { handleFileList(e.target.files); e.target.value = '' }} />
     </div>
   )
 }
@@ -338,17 +449,27 @@ function InstanceThumbs({ inst }: { inst: BreakInstance }) {
   return (
     <div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', background: 'var(--surface-2)', borderRadius: 6, padding: '4px 6px', border: `1px solid ${hasBoth ? 'var(--success)' : 'var(--border)'}` }}>
       <div style={{ textAlign: 'center' }}>
-        <img src={inst.front.scanUrl ?? inst.front.previewUrl} alt="" style={{ width: 40, height: 56, objectFit: 'cover', borderRadius: 3, border: '1px solid var(--border)', display: 'block' }} />
+        <img
+          src={inst.front.previewUrl}
+          alt=""
+          onError={e => { if (inst.front.scanUrl) e.currentTarget.src = inst.front.scanUrl }}
+          style={{ width: 56, height: 78, objectFit: 'cover', borderRadius: 3, border: '1px solid var(--border)', display: 'block' }}
+        />
         <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>front</span>
       </div>
       {inst.back ? (
         <div style={{ textAlign: 'center' }}>
-          <img src={inst.back.scanUrl ?? inst.back.previewUrl} alt="" style={{ width: 40, height: 56, objectFit: 'cover', borderRadius: 3, border: '1px solid var(--border)', display: 'block' }} />
+          <img
+            src={inst.back.previewUrl}
+            alt=""
+            onError={e => { if (inst.back?.scanUrl) e.currentTarget.src = inst.back.scanUrl }}
+            style={{ width: 56, height: 78, objectFit: 'cover', borderRadius: 3, border: '1px solid var(--border)', display: 'block' }}
+          />
           <span style={{ fontSize: 9, color: 'var(--purple)' }}>back</span>
         </div>
       ) : (
         <div style={{ textAlign: 'center' }}>
-          <div style={{ width: 40, height: 56, borderRadius: 3, border: '1px dashed var(--border)', background: 'var(--surface)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 56, height: 78, borderRadius: 3, border: '1px dashed var(--border)', background: 'var(--surface)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <span style={{ fontSize: 16, opacity: 0.3 }}>?</span>
           </div>
           <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>none</span>
@@ -364,26 +485,27 @@ function CardRow({ card }: { card: BreakCard }) {
   const hasAnyBack = card.instances.some(i => i.back)
   const allPaired = card.instances.every(i => i.back)
   const borderColor = allPaired ? 'var(--success)' : hasAnyBack ? '#2e6e3a' : 'var(--border)'
-  const heroImg = card.instances[0]?.front.candidateImageUrl ?? card.instances[0]?.front.previewUrl
+
+  // Hero: prefer TCGPlayer candidate image, fall back to local preview
+  const heroSrc = card.instances[0]?.front.candidateImageUrl ?? card.instances[0]?.front.previewUrl
 
   return (
     <div style={{ background: 'var(--surface)', border: `1px solid ${borderColor}`, borderRadius: 8, padding: 12, marginBottom: 8 }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
         <img
-          src={heroImg} alt=""
+          src={heroSrc}
+          alt=""
           onError={e => {
             const img = e.currentTarget
             const fallback = card.instances[0]?.front.previewUrl
             if (fallback && img.src !== fallback) img.src = fallback
           }}
-          style={{ width: 60, height: 84, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', flexShrink: 0 }}
+          style={{ width: 80, height: 112, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', flexShrink: 0 }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
             <span style={{ fontWeight: 700, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.cardName}</span>
-            <span style={{ background: 'var(--primary)', color: '#fff', borderRadius: 12, padding: '1px 8px', fontSize: 12, fontWeight: 600, flexShrink: 0 }}>
-              ×{card.instances.length}
-            </span>
+            <span style={{ background: 'var(--primary)', color: '#fff', borderRadius: 12, padding: '1px 8px', fontSize: 12, fontWeight: 600, flexShrink: 0 }}>×{card.instances.length}</span>
           </div>
           {card.setName && <div style={{ color: 'var(--text-dim)', fontSize: 12, marginBottom: 2 }}>{card.setName}</div>}
           {card.cardNumber && <div style={{ color: 'var(--text-dim)', fontSize: 11, marginBottom: 6 }}>#{card.cardNumber}</div>}
@@ -424,31 +546,11 @@ interface SealedProduct {
 type PickerGame = 'mtg' | 'pokemon'
 type PickerCategory = 'set' | 'commander'
 
-function ToggleGroup({
-  options,
-  active,
-  onChange,
-  activeColor,
-}: {
-  options: { value: string; label: string }[]
-  active: string
-  onChange: (v: string) => void
-  activeColor: string
-}) {
+function ToggleGroup({ options, active, onChange, activeColor }: { options: { value: string; label: string }[]; active: string; onChange: (v: string) => void; activeColor: string }) {
   return (
     <div style={{ display: 'flex', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', flexShrink: 0 }}>
       {options.map(o => (
-        <button
-          key={o.value}
-          onClick={() => onChange(o.value)}
-          style={{
-            padding: '5px 10px', border: 'none', fontFamily: 'inherit',
-            background: active === o.value ? activeColor : 'transparent',
-            color: active === o.value ? '#fff' : 'var(--text-dim)',
-            fontWeight: active === o.value ? 700 : 400,
-            fontSize: 12, cursor: 'pointer',
-          }}
-        >
+        <button key={o.value} onClick={() => onChange(o.value)} style={{ padding: '5px 10px', border: 'none', fontFamily: 'inherit', background: active === o.value ? activeColor : 'transparent', color: active === o.value ? '#fff' : 'var(--text-dim)', fontWeight: active === o.value ? 700 : 400, fontSize: 12, cursor: 'pointer' }}>
           {o.label}
         </button>
       ))}
@@ -458,12 +560,7 @@ function ToggleGroup({
 
 function DeckRow({ label, sublabel, imageUrl, onClick }: { label: string; sublabel?: string; imageUrl?: string; onClick: () => void }) {
   return (
-    <div
-      onClick={onClick}
-      style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', cursor: 'pointer', borderLeft: '2px solid transparent' }}
-      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }}
-      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
-    >
+    <div onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', cursor: 'pointer', borderLeft: '2px solid transparent' }} onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
       {imageUrl ? (
         <img src={imageUrl} alt="" style={{ width: 36, height: 36, objectFit: 'contain', flexShrink: 0, borderRadius: 3 }} />
       ) : (
@@ -477,30 +574,19 @@ function DeckRow({ label, sublabel, imageUrl, onClick }: { label: string; sublab
   )
 }
 
-function SetPicker({
-  selectedCode,
-  onSelect,
-}: {
-  selectedCode: string
-  onSelect: (code: string, setName: string, game: string, deckName?: string) => void
-}) {
+function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect: (code: string, setName: string, game: string, deckName?: string) => void }) {
   const [open, setOpen] = useState(false)
   const [game, setGame] = useState<PickerGame>('mtg')
   const [category, setCategory] = useState<PickerCategory>('set')
   const [search, setSearch] = useState('')
-
   const [sets, setSets] = useState<MarketSet[]>([])
   const [setsLoading, setSetsLoading] = useState(false)
-
-  // Commander
   const [cmdStep, setCmdStep] = useState<'set' | 'deck'>('set')
   const [cmdSet, setCmdSet] = useState<MarketSet | null>(null)
   const [decks, setDecks] = useState<SealedProduct[]>([])
   const [decksLoading, setDecksLoading] = useState(false)
-
   const [selectedName, setSelectedName] = useState('')
   const [selectedDeck, setSelectedDeck] = useState('')
-
   const btnRef = useRef<HTMLButtonElement>(null)
   const dropRef = useRef<HTMLDivElement>(null)
   const [dropPos, setDropPos] = useState<{ top: number; left: number } | null>(null)
@@ -519,9 +605,7 @@ function SetPicker({
     setDecksLoading(true)
     fetch(`${MARKET_API}/v1/sets/${game}/${encodeURIComponent(cmdSet.code)}/sealed`)
       .then(r => r.json())
-      .then((d: { sealed: SealedProduct[] }) =>
-        setDecks((d.sealed ?? []).filter(p => p.product_type === 'commander_deck')),
-      )
+      .then((d: { sealed: SealedProduct[] }) => setDecks((d.sealed ?? []).filter(p => p.product_type === 'commander_deck')))
       .catch(() => setDecks([]))
       .finally(() => setDecksLoading(false))
   }, [cmdSet, game])
@@ -531,32 +615,22 @@ function SetPicker({
     const handler = (e: MouseEvent) => {
       if (btnRef.current?.contains(e.target as Node)) return
       if (dropRef.current?.contains(e.target as Node)) return
-      setOpen(false)
-      setSearch('')
+      setOpen(false); setSearch('')
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
 
-  const clearSelection = (g = game) => {
-    setSelectedName('')
-    setSelectedDeck('')
-    onSelect('', '', g)
-  }
+  const clearSelection = (g = game) => { setSelectedName(''); setSelectedDeck(''); onSelect('', '', g) }
 
   const handleGameSwitch = (g: PickerGame) => {
-    setGame(g)
-    setSearch('')
+    setGame(g); setSearch('')
     if (g === 'pokemon') setCategory('set')
     if (selectedCode) clearSelection(g)
   }
 
   const handleCategorySwitch = (cat: PickerCategory) => {
-    setCategory(cat)
-    setSearch('')
-    setCmdStep('set')
-    setCmdSet(null)
-    setDecks([])
+    setCategory(cat); setSearch(''); setCmdStep('set'); setCmdSet(null); setDecks([])
     if (selectedCode) clearSelection()
   }
 
@@ -570,160 +644,68 @@ function SetPicker({
   }
 
   const handleSelectSet = (s: MarketSet) => {
-    setSelectedName(s.name)
-    setSelectedDeck('')
-    setSearch('')
-    setOpen(false)
-    setDropPos(null)
+    setSelectedName(s.name); setSelectedDeck(''); setSearch('')
+    setOpen(false); setDropPos(null)
     onSelect(s.code, s.name, s.game)
   }
 
-  const handlePickCmdSet = (s: MarketSet) => {
-    setCmdSet(s)
-    setCmdStep('deck')
-    setSearch('')
-  }
+  const handlePickCmdSet = (s: MarketSet) => { setCmdSet(s); setCmdStep('deck'); setSearch('') }
 
   const handleSelectDeck = (s: MarketSet, deck: SealedProduct | null) => {
-    setSelectedName(s.name)
-    setSelectedDeck(deck?.name ?? '')
-    setSearch('')
-    setOpen(false)
-    setDropPos(null)
+    setSelectedName(s.name); setSelectedDeck(deck?.name ?? ''); setSearch('')
+    setOpen(false); setDropPos(null)
     onSelect(s.code, s.name, s.game, deck?.name)
   }
 
-  const filteredSets = sets.filter(s => {
-    const q = search.toLowerCase()
-    return !q || s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)
-  })
-
-  const filteredDecks = decks.filter(d =>
-    !search || d.name.toLowerCase().includes(search.toLowerCase()),
-  )
+  const filteredSets = sets.filter(s => { const q = search.toLowerCase(); return !q || s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q) })
+  const filteredDecks = decks.filter(d => !search || d.name.toLowerCase().includes(search.toLowerCase()))
 
   const dropdown = dropPos && (
-    <div
-      ref={dropRef}
-      style={{
-        position: 'fixed', top: dropPos.top, left: dropPos.left,
-        width: 380, maxHeight: 480, zIndex: 9999,
-        background: 'var(--surface)', border: '1px solid var(--border)',
-        borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-        display: 'flex', flexDirection: 'column', overflow: 'hidden',
-      }}
-    >
-      {/* Search */}
+    <div ref={dropRef} style={{ position: 'fixed', top: dropPos.top, left: dropPos.left, width: 380, maxHeight: 480, zIndex: 9999, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-        <input
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder={category === 'commander' && cmdStep === 'deck' ? 'Search decks…' : 'Search by name or code…'}
-          style={{
-            width: '100%', background: 'var(--bg)', border: '1px solid var(--border)',
-            borderRadius: 5, color: 'var(--text)', padding: '5px 8px', fontSize: 12, fontFamily: 'inherit',
-          }}
-        />
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder={category === 'commander' && cmdStep === 'deck' ? 'Search decks…' : 'Search by name or code…'} style={{ width: '100%', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '5px 8px', fontSize: 12, fontFamily: 'inherit' }} />
       </div>
-
-      {/* Commander breadcrumb when in deck step */}
       {category === 'commander' && cmdStep === 'deck' && (
         <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-          <button
-            onClick={() => { setCmdStep('set'); setCmdSet(null); setDecks([]); setSearch('') }}
-            style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}
-          >
-            ← All sets
-          </button>
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2, fontWeight: 600 }}>
-            {cmdSet?.name}
-          </div>
+          <button onClick={() => { setCmdStep('set'); setCmdSet(null); setDecks([]); setSearch('') }} style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>← All sets</button>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2, fontWeight: 600 }}>{cmdSet?.name}</div>
         </div>
       )}
-
-      {/* List */}
       <div style={{ overflowY: 'auto', flex: 1 }}>
-
-        {/* Commander deck list */}
         {category === 'commander' && cmdStep === 'deck' && cmdSet && (
           decksLoading ? (
             <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>Loading…</div>
           ) : (
             <>
-              <DeckRow
-                label="All decks in set"
-                sublabel={`Identify cards from any deck in ${cmdSet.code.toUpperCase()}`}
-                onClick={() => handleSelectDeck(cmdSet, null)}
-              />
-              {filteredDecks.length === 0 && (
-                <div style={{ padding: '8px 16px', color: 'var(--text-dim)', fontSize: 12 }}>
-                  No commander decks found for this set
-                </div>
-              )}
-              {filteredDecks.map(d => (
-                <DeckRow
-                  key={d.id}
-                  label={d.name}
-                  sublabel={d.qualifier ?? undefined}
-                  imageUrl={d.image_url ?? undefined}
-                  onClick={() => handleSelectDeck(cmdSet, d)}
-                />
-              ))}
+              <DeckRow label="All decks in set" sublabel={`Identify cards from any deck in ${cmdSet.code.toUpperCase()}`} onClick={() => handleSelectDeck(cmdSet, null)} />
+              {filteredDecks.length === 0 && <div style={{ padding: '8px 16px', color: 'var(--text-dim)', fontSize: 12 }}>No commander decks found for this set</div>}
+              {filteredDecks.map(d => <DeckRow key={d.id} label={d.name} sublabel={d.qualifier ?? undefined} imageUrl={d.image_url ?? undefined} onClick={() => handleSelectDeck(cmdSet, d)} />)}
             </>
           )
         )}
-
-        {/* Set list */}
         {(category === 'set' || (category === 'commander' && cmdStep === 'set')) && (
           setsLoading ? (
             <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>Loading…</div>
           ) : filteredSets.length === 0 ? (
             <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>No sets found</div>
-          ) : (
-            filteredSets.map(s => {
-              const isSelected = category === 'set' && s.code.toUpperCase() === selectedCode
-              return (
-                <div
-                  key={s.id}
-                  onClick={() => category === 'set' ? handleSelectSet(s) : handlePickCmdSet(s)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', cursor: 'pointer',
-                    background: isSelected ? 'rgba(99,102,241,0.12)' : 'transparent',
-                    borderLeft: isSelected ? '2px solid var(--primary)' : '2px solid transparent',
-                  }}
-                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }}
-                  onMouseLeave={e => { e.currentTarget.style.background = isSelected ? 'rgba(99,102,241,0.12)' : 'transparent' }}
-                >
-                  {s.image_url && (
-                    <img src={s.image_url} alt="" style={{ width: 20, height: 20, objectFit: 'contain', flexShrink: 0, opacity: 0.8 }} />
-                  )}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
-                    <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-                      {s.code.toUpperCase()}
-                      {s.card_count != null ? ` · ${s.card_count} cards` : ''}
-                      {s.release_date ? ` · ${s.release_date.slice(0, 7)}` : ''}
-                    </div>
-                  </div>
-                  {category === 'commander' && (
-                    <span style={{ color: 'var(--text-dim)', fontSize: 12, flexShrink: 0 }}>›</span>
-                  )}
+          ) : filteredSets.map(s => {
+            const isSelected = category === 'set' && s.code === selectedCode
+            return (
+              <div key={s.id} onClick={() => category === 'set' ? handleSelectSet(s) : handlePickCmdSet(s)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', cursor: 'pointer', background: isSelected ? 'rgba(99,102,241,0.12)' : 'transparent', borderLeft: isSelected ? '2px solid var(--primary)' : '2px solid transparent' }} onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }} onMouseLeave={e => { e.currentTarget.style.background = isSelected ? 'rgba(99,102,241,0.12)' : 'transparent' }}>
+                {s.image_url && <img src={s.image_url} alt="" style={{ width: 20, height: 20, objectFit: 'contain', flexShrink: 0, opacity: 0.8 }} />}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{s.code.toUpperCase()}{s.card_count != null ? ` · ${s.card_count} cards` : ''}{s.release_date ? ` · ${s.release_date.slice(0, 7)}` : ''}</div>
                 </div>
-              )
-            })
-          )
+                {category === 'commander' && <span style={{ color: 'var(--text-dim)', fontSize: 12, flexShrink: 0 }}>›</span>}
+              </div>
+            )
+          })
         )}
       </div>
-
-      {/* Clear */}
       {selectedCode && (
         <div style={{ padding: '8px 12px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
-          <button
-            onClick={() => { clearSelection(); setOpen(false); setDropPos(null) }}
-            style={{ width: '100%', background: 'none', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text-dim)', padding: '4px 0', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}
-          >
-            Clear selection
-          </button>
+          <button onClick={() => { clearSelection(); setOpen(false); setDropPos(null) }} style={{ width: '100%', background: 'none', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text-dim)', padding: '4px 0', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>Clear selection</button>
         </div>
       )}
     </div>
@@ -731,42 +713,16 @@ function SetPicker({
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <ToggleGroup
-        options={[{ value: 'mtg', label: 'MTG' }, { value: 'pokemon', label: 'Pokémon' }]}
-        active={game}
-        onChange={v => handleGameSwitch(v as PickerGame)}
-        activeColor="var(--primary)"
-      />
+      <ToggleGroup options={[{ value: 'mtg', label: 'MTG' }, { value: 'pokemon', label: 'Pokémon' }]} active={game} onChange={v => handleGameSwitch(v as PickerGame)} activeColor="var(--primary)" />
       {game === 'mtg' && (
-        <ToggleGroup
-          options={[{ value: 'set', label: 'Set' }, { value: 'commander', label: 'Commander' }]}
-          active={category}
-          onChange={v => handleCategorySwitch(v as PickerCategory)}
-          activeColor="var(--purple)"
-        />
+        <ToggleGroup options={[{ value: 'set', label: 'Set' }, { value: 'commander', label: 'Commander' }]} active={category} onChange={v => handleCategorySwitch(v as PickerCategory)} activeColor="var(--purple)" />
       )}
-      <button
-        ref={btnRef}
-        onClick={handleToggle}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 8,
-          background: selectedCode ? 'rgba(99,102,241,0.15)' : 'var(--surface-2)',
-          border: `1px solid ${selectedCode ? 'var(--primary)' : 'var(--border)'}`,
-          borderRadius: 6, color: 'var(--text)', padding: '5px 10px',
-          fontSize: 13, cursor: 'pointer', minWidth: 180, maxWidth: 320, fontFamily: 'inherit',
-        }}
-      >
+      <button ref={btnRef} onClick={handleToggle} style={{ display: 'flex', alignItems: 'center', gap: 8, background: selectedCode ? 'rgba(99,102,241,0.15)' : 'var(--surface-2)', border: `1px solid ${selectedCode ? 'var(--primary)' : 'var(--border)'}`, borderRadius: 6, color: 'var(--text)', padding: '5px 10px', fontSize: 13, cursor: 'pointer', minWidth: 180, maxWidth: 320, fontFamily: 'inherit' }}>
         <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {selectedCode ? (
-            <>
-              <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{selectedCode} · </span>
-              {selectedName}
-              {selectedDeck && <span style={{ color: 'var(--text-dim)', fontSize: 11 }}> — {selectedDeck}</span>}
-            </>
+            <><span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{selectedCode} · </span>{selectedName}{selectedDeck && <span style={{ color: 'var(--text-dim)', fontSize: 11 }}> — {selectedDeck}</span>}</>
           ) : (
-            <span style={{ color: 'var(--text-dim)' }}>
-              {category === 'commander' ? 'Select commander deck…' : 'Select a set…'}
-            </span>
+            <span style={{ color: 'var(--text-dim)' }}>{category === 'commander' ? 'Select commander deck…' : 'Select a set…'}</span>
           )}
         </span>
         <span style={{ color: 'var(--text-dim)', fontSize: 10, flexShrink: 0 }}>{open ? '▲' : '▼'}</span>
@@ -823,28 +779,17 @@ export default function App() {
   const processNext = useCallback(() => {
     if (activeScans.current >= MAX_CONCURRENT) return
     if (queueRef.current.length === 0) return
-
     const id = queueRef.current.shift()!
     activeScans.current++
-
     const myIndex = entriesRef.current.findIndex(e => e.id === id)
     const file = entriesRef.current[myIndex]?.file
-    if (!file) {
-      activeScans.current--
-      processNext()
-      return
-    }
-
+    if (!file) { activeScans.current--; processNext(); return }
     patchEntry(id, { status: 'identifying' })
-
     callIdentifyApi(file, setCodeRef.current)
       .then(async (res: ApiResponse) => {
         if (res.confidence === 'back' || res.back_detected) {
           const preceding = await findPrecedingFront(myIndex)
-          patchEntry(id, {
-            status: 'back_detected', confidence: 'back',
-            scanUrl: res.front_image, pairedFrontId: preceding?.id,
-          })
+          patchEntry(id, { status: 'back_detected', confidence: 'back', scanUrl: res.front_image, pairedFrontId: preceding?.id })
         } else {
           const top = res.candidates?.[0]
           const cardName = top?.name
@@ -853,6 +798,7 @@ export default function App() {
             scanUrl: res.front_image, tcgplayerId: top?.tcgplayer_product_id,
             cardName, cardNumber: cardName ? extractCardNumber(cardName) : undefined,
             setName: top?.set_name, candidateImageUrl: top?.image_url,
+            allCandidates: res.candidates,
           })
         }
       })
@@ -860,21 +806,12 @@ export default function App() {
         const msg = err instanceof Error ? err.message : String(err)
         patchEntry(id, { status: 'error', errorMsg: msg })
       })
-      .finally(() => {
-        activeScans.current--
-        processNext()
-      })
+      .finally(() => { activeScans.current--; processNext() })
   }, [patchEntry])
 
   function addFiles(files: File[]) {
-    const newEntries: BreakEntry[] = files.map(file => ({
-      id: makeId(), file, previewUrl: URL.createObjectURL(file), status: 'queued' as const,
-    }))
-    setEntries(prev => {
-      const next = [...prev, ...newEntries]
-      entriesRef.current = next
-      return next
-    })
+    const newEntries: BreakEntry[] = files.map(file => ({ id: makeId(), file, previewUrl: URL.createObjectURL(file), status: 'queued' as const }))
+    setEntries(prev => { const next = [...prev, ...newEntries]; entriesRef.current = next; return next })
     for (const e of newEntries) queueRef.current.push(e.id)
     const slots = MAX_CONCURRENT - activeScans.current
     for (let i = 0; i < slots; i++) processNext()
@@ -884,50 +821,43 @@ export default function App() {
     patchEntry(id, { overrideName: name.trim() || undefined })
   }
 
+  function handleCorrect(id: string, candidate: ApiCandidate) {
+    patchEntry(id, {
+      tcgplayerId: candidate.tcgplayer_product_id,
+      cardName: candidate.name,
+      cardNumber: extractCardNumber(candidate.name),
+      setName: candidate.set_name,
+      candidateImageUrl: candidate.image_url,
+      overrideName: undefined,
+      needsReview: false,
+      confidence: 'high',
+    })
+  }
+
   const completedCount = entries.filter(e => e.status === 'done' || e.status === 'back_detected').length
   const cards = groupEntries(entries)
 
-  useEffect(() => {
-    return () => { for (const e of entriesRef.current) URL.revokeObjectURL(e.previewUrl) }
-  }, [])
+  useEffect(() => { return () => { for (const e of entriesRef.current) URL.revokeObjectURL(e.previewUrl) } }, [])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       {/* ── Top bar ── */}
-      <header style={{
-        display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px',
-        borderBottom: '1px solid var(--border)', background: 'var(--surface)', flexShrink: 0, flexWrap: 'wrap',
-      }}>
-        <h1 style={{ fontSize: 16, fontWeight: 700, color: 'var(--primary)', marginRight: 4, whiteSpace: 'nowrap' }}>
-          Box Break Scanner
-        </h1>
+      <header style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', borderBottom: '1px solid var(--border)', background: 'var(--surface)', flexShrink: 0, flexWrap: 'wrap' }}>
+        <h1 style={{ fontSize: 16, fontWeight: 700, color: 'var(--primary)', marginRight: 4, whiteSpace: 'nowrap' }}>Box Break Scanner</h1>
         <SetPicker
           selectedCode={setCode}
-          onSelect={(code, name, _game, deck) => {
-            setSetCode(code)
-            setSetName(name)
-            setDeckName(deck ?? '')
-            setCodeRef.current = code
-          }}
+          onSelect={(code, name, _game, deck) => { setSetCode(code); setSetName(name); setDeckName(deck ?? ''); setCodeRef.current = code }}
         />
         {setCode && (
           <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>
             · restricted to {deckName ? `${deckName} (${setCode})` : setName || setCode}
           </span>
         )}
-        <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap', marginLeft: 'auto' }}>
-          {completedCount} / {entries.length} processed
-        </span>
+        <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap', marginLeft: 'auto' }}>{completedCount} / {entries.length} processed</span>
         <button
           disabled={completedCount === 0}
           onClick={() => downloadCSV(buildCSV(entries))}
-          style={{
-            background: completedCount === 0 ? 'var(--surface-2)' : 'var(--primary)',
-            border: 'none', borderRadius: 6,
-            color: completedCount === 0 ? 'var(--text-dim)' : '#fff',
-            padding: '6px 16px', fontSize: 13, fontWeight: 600,
-            cursor: completedCount === 0 ? 'not-allowed' : 'pointer',
-          }}
+          style={{ background: completedCount === 0 ? 'var(--surface-2)' : 'var(--primary)', border: 'none', borderRadius: 6, color: completedCount === 0 ? 'var(--text-dim)' : '#fff', padding: '6px 16px', fontSize: 13, fontWeight: 600, cursor: completedCount === 0 ? 'not-allowed' : 'pointer' }}
         >
           Export CSV
         </button>
@@ -946,8 +876,7 @@ export default function App() {
           ) : (
             <>
               <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                {cards.length} unique card{cards.length !== 1 ? 's' : ''} &nbsp;·&nbsp;{' '}
-                {cards.reduce((a, c) => a + c.instances.length, 0)} total copies
+                {cards.length} unique card{cards.length !== 1 ? 's' : ''} · {cards.reduce((a, c) => a + c.instances.length, 0)} total copies
               </div>
               {cards.map(card => <CardRow key={card.key} card={card} />)}
             </>
@@ -955,7 +884,7 @@ export default function App() {
         </main>
 
         {/* Right: drop zone + queue */}
-        <aside style={{ width: 300, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--border)', background: 'var(--surface)' }}>
+        <aside style={{ width: 320, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--border)', background: 'var(--surface)' }}>
           <div style={{ padding: 12, borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
             <DropZone onFiles={addFiles} />
           </div>
@@ -964,7 +893,7 @@ export default function App() {
               <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 12, padding: '24px 0' }}>No images yet</div>
             ) : (
               [...entries].reverse().map(e => (
-                <QueueItem key={e.id} entry={e} onOverride={handleOverride} />
+                <QueueItem key={e.id} entry={e} onOverride={handleOverride} onCorrect={handleCorrect} />
               ))
             )}
           </div>
