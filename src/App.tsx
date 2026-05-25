@@ -323,23 +323,30 @@ function QueueItem({
   entry,
   onOverride,
   onCorrect,
+  imgScale = 1,
 }: {
   entry: BreakEntry
   onOverride: (id: string, name: string) => void
   onCorrect: (id: string, candidate: ApiCandidate) => void
+  imgScale?: 1 | 2 | 4
 }) {
   const [correcting, setCorrecting] = useState(false)
   const canCorrect = entry.status === 'done' || (entry.status === 'back_detected' && !!entry.pairedFrontId)
+  const sw = 80 * imgScale, sh = 112 * imgScale
+  const cw = 60 * imgScale, ch = 84 * imgScale
 
   return (
     <div style={{ padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-        {/* Larger scan preview */}
-        <img
-          src={entry.previewUrl}
-          alt=""
-          style={{ width: 80, height: 112, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', flexShrink: 0 }}
-        />
+        {/* Scan preview */}
+        <div style={{ flexShrink: 0, textAlign: 'center' }}>
+          <img
+            src={entry.previewUrl}
+            alt=""
+            style={{ width: sw, height: sh, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', display: 'block' }}
+          />
+          <span style={{ fontSize: 9, color: '#4ade80', fontWeight: 600 }}>📷 scan</span>
+        </div>
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
           <div style={{ fontSize: 11, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={entry.file.name}>
             {entry.file.name}
@@ -382,28 +389,51 @@ function QueueItem({
           )}
         </div>
 
-        {/* Candidate thumbnail (if available) */}
+        {/* Stock image from TCGPlayer */}
         {entry.status === 'done' && entry.candidateImageUrl && (
           <div style={{ flexShrink: 0, textAlign: 'center' }}>
             <img
               src={entry.candidateImageUrl}
               alt=""
               onError={e => { e.currentTarget.style.display = 'none' }}
-              style={{ width: 60, height: 84, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', display: 'block' }}
+              style={{ width: cw, height: ch, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', display: 'block' }}
             />
-            <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 2 }}>Match</div>
+            <span style={{ fontSize: 9, color: 'var(--primary)', fontWeight: 600 }}>stock</span>
           </div>
         )}
       </div>
 
       {/* Correction panel */}
       {correcting && (
-        <CorrectionPanel
-          entry={entry}
-          onSelect={c => { onCorrect(entry.id, c); setCorrecting(false) }}
-          onOverride={name => { onOverride(entry.id, name); setCorrecting(false) }}
-          onClose={() => setCorrecting(false)}
-        />
+        <>
+          <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <div style={{ textAlign: 'center', flexShrink: 0 }}>
+              <img
+                src={entry.previewUrl}
+                alt=""
+                style={{ width: 240, height: 336, objectFit: 'contain', borderRadius: 6, border: '1px solid var(--primary)', background: '#000', display: 'block' }}
+              />
+              <span style={{ fontSize: 9, color: '#4ade80', fontWeight: 600 }}>📷 scan — large view</span>
+            </div>
+            {entry.candidateImageUrl && (
+              <div style={{ textAlign: 'center', flexShrink: 0 }}>
+                <img
+                  src={entry.candidateImageUrl}
+                  alt=""
+                  onError={e => { e.currentTarget.style.display = 'none' }}
+                  style={{ width: 240, height: 336, objectFit: 'contain', borderRadius: 6, border: '1px solid var(--border)', background: '#000', display: 'block' }}
+                />
+                <span style={{ fontSize: 9, color: 'var(--primary)', fontWeight: 600 }}>stock — current match</span>
+              </div>
+            )}
+          </div>
+          <CorrectionPanel
+            entry={entry}
+            onSelect={c => { onCorrect(entry.id, c); setCorrecting(false) }}
+            onOverride={name => { onOverride(entry.id, name); setCorrecting(false) }}
+            onClose={() => setCorrecting(false)}
+          />
+        </>
       )}
     </div>
   )
@@ -444,8 +474,9 @@ function DropZone({ onFiles }: { onFiles: (files: File[]) => void }) {
 
 // ─── Instance thumbnails ──────────────────────────────────────────────────────
 
-function InstanceThumbs({ inst }: { inst: BreakInstance }) {
+function InstanceThumbs({ inst, imgScale = 1 }: { inst: BreakInstance; imgScale?: 1 | 2 | 4 }) {
   const hasBoth = !!inst.back
+  const tw = 56 * imgScale, th = 78 * imgScale
   return (
     <div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', background: 'var(--surface-2)', borderRadius: 6, padding: '4px 6px', border: `1px solid ${hasBoth ? 'var(--success)' : 'var(--border)'}` }}>
       <div style={{ textAlign: 'center' }}>
@@ -453,9 +484,9 @@ function InstanceThumbs({ inst }: { inst: BreakInstance }) {
           src={inst.front.previewUrl}
           alt=""
           onError={e => { if (inst.front.scanUrl) e.currentTarget.src = inst.front.scanUrl }}
-          style={{ width: 56, height: 78, objectFit: 'cover', borderRadius: 3, border: '1px solid var(--border)', display: 'block' }}
+          style={{ width: tw, height: th, objectFit: 'cover', borderRadius: 3, border: '1px solid var(--border)', display: 'block' }}
         />
-        <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>front</span>
+        <span style={{ fontSize: 9, color: '#4ade80', fontWeight: 600 }}>📷 front</span>
       </div>
       {inst.back ? (
         <div style={{ textAlign: 'center' }}>
@@ -463,13 +494,13 @@ function InstanceThumbs({ inst }: { inst: BreakInstance }) {
             src={inst.back.previewUrl}
             alt=""
             onError={e => { if (inst.back?.scanUrl) e.currentTarget.src = inst.back.scanUrl }}
-            style={{ width: 56, height: 78, objectFit: 'cover', borderRadius: 3, border: '1px solid var(--border)', display: 'block' }}
+            style={{ width: tw, height: th, objectFit: 'cover', borderRadius: 3, border: '1px solid var(--border)', display: 'block' }}
           />
-          <span style={{ fontSize: 9, color: 'var(--purple)' }}>back</span>
+          <span style={{ fontSize: 9, color: '#4ade80', fontWeight: 600 }}>📷 back</span>
         </div>
       ) : (
         <div style={{ textAlign: 'center' }}>
-          <div style={{ width: 56, height: 78, borderRadius: 3, border: '1px dashed var(--border)', background: 'var(--surface)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: tw, height: th, borderRadius: 3, border: '1px dashed var(--border)', background: 'var(--surface)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <span style={{ fontSize: 16, opacity: 0.3 }}>?</span>
           </div>
           <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>none</span>
@@ -481,27 +512,33 @@ function InstanceThumbs({ inst }: { inst: BreakInstance }) {
 
 // ─── Card Row ─────────────────────────────────────────────────────────────────
 
-function CardRow({ card }: { card: BreakCard }) {
+function CardRow({ card, imgScale = 1 }: { card: BreakCard; imgScale?: 1 | 2 | 4 }) {
   const hasAnyBack = card.instances.some(i => i.back)
   const allPaired = card.instances.every(i => i.back)
   const borderColor = allPaired ? 'var(--success)' : hasAnyBack ? '#2e6e3a' : 'var(--border)'
+  const hw = 80 * imgScale, hh = 112 * imgScale
 
-  // Hero: prefer TCGPlayer candidate image, fall back to local preview
   const heroSrc = card.instances[0]?.front.candidateImageUrl ?? card.instances[0]?.front.previewUrl
+  const heroIsStock = !!card.instances[0]?.front.candidateImageUrl
 
   return (
     <div style={{ background: 'var(--surface)', border: `1px solid ${borderColor}`, borderRadius: 8, padding: 12, marginBottom: 8 }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-        <img
-          src={heroSrc}
-          alt=""
-          onError={e => {
-            const img = e.currentTarget
-            const fallback = card.instances[0]?.front.previewUrl
-            if (fallback && img.src !== fallback) img.src = fallback
-          }}
-          style={{ width: 80, height: 112, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', flexShrink: 0 }}
-        />
+        <div style={{ flexShrink: 0, textAlign: 'center' }}>
+          <img
+            src={heroSrc}
+            alt=""
+            onError={e => {
+              const img = e.currentTarget
+              const fallback = card.instances[0]?.front.previewUrl
+              if (fallback && img.src !== fallback) img.src = fallback
+            }}
+            style={{ width: hw, height: hh, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', display: 'block' }}
+          />
+          <span style={{ fontSize: 9, fontWeight: 600, color: heroIsStock ? 'var(--primary)' : '#4ade80' }}>
+            {heroIsStock ? 'stock' : '📷 scan'}
+          </span>
+        </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
             <span style={{ fontWeight: 700, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.cardName}</span>
@@ -510,7 +547,7 @@ function CardRow({ card }: { card: BreakCard }) {
           {card.setName && <div style={{ color: 'var(--text-dim)', fontSize: 12, marginBottom: 2 }}>{card.setName}</div>}
           {card.cardNumber && <div style={{ color: 'var(--text-dim)', fontSize: 11, marginBottom: 6 }}>#{card.cardNumber}</div>}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
-            {card.instances.map((inst, idx) => <InstanceThumbs key={idx} inst={inst} />)}
+            {card.instances.map((inst, idx) => <InstanceThumbs key={idx} inst={inst} imgScale={imgScale} />)}
           </div>
         </div>
       </div>
@@ -739,6 +776,7 @@ export default function App() {
   const [setCode, setSetCode] = useState('')
   const [setName, setSetName] = useState('')
   const [deckName, setDeckName] = useState('')
+  const [imgScale, setImgScale] = useState<1 | 2 | 4>(1)
 
   const entriesRef = useRef<BreakEntry[]>([])
   const setCodeRef = useRef('')
@@ -853,7 +891,16 @@ export default function App() {
             · restricted to {deckName ? `${deckName} (${setCode})` : setName || setCode}
           </span>
         )}
-        <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap', marginLeft: 'auto' }}>{completedCount} / {entries.length} processed</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Size:</span>
+          <ToggleGroup
+            options={[{ value: '1', label: '1×' }, { value: '2', label: '2×' }, { value: '4', label: '4×' }]}
+            active={String(imgScale)}
+            onChange={v => setImgScale(Number(v) as 1 | 2 | 4)}
+            activeColor="var(--primary)"
+          />
+        </div>
+        <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>{completedCount} / {entries.length} processed</span>
         <button
           disabled={completedCount === 0}
           onClick={() => downloadCSV(buildCSV(entries))}
@@ -878,7 +925,7 @@ export default function App() {
               <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                 {cards.length} unique card{cards.length !== 1 ? 's' : ''} · {cards.reduce((a, c) => a + c.instances.length, 0)} total copies
               </div>
-              {cards.map(card => <CardRow key={card.key} card={card} />)}
+              {cards.map(card => <CardRow key={card.key} card={card} imgScale={imgScale} />)}
             </>
           )}
         </main>
@@ -893,7 +940,7 @@ export default function App() {
               <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 12, padding: '24px 0' }}>No images yet</div>
             ) : (
               [...entries].reverse().map(e => (
-                <QueueItem key={e.id} entry={e} onOverride={handleOverride} onCorrect={handleCorrect} />
+                <QueueItem key={e.id} entry={e} onOverride={handleOverride} onCorrect={handleCorrect} imgScale={imgScale} />
               ))
             )}
           </div>
