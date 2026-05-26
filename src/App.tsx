@@ -893,6 +893,20 @@ export default function App() {
         >
           Export CSV
         </button>
+        <button
+          disabled={entries.length === 0}
+          onClick={() => {
+            if (!confirm(`Clear ${entries.length} scan${entries.length !== 1 ? 's' : ''} from this session? Stored images on the server are kept until purged separately.`)) return;
+            for (const e of entries) URL.revokeObjectURL(e.previewUrl);
+            setEntries([]);
+            entriesRef.current = [];
+            queueRef.current = [];
+          }}
+          style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, color: entries.length === 0 ? 'var(--text-dim)' : 'var(--text)', padding: '6px 12px', fontSize: 12, cursor: entries.length === 0 ? 'not-allowed' : 'pointer' }}
+          title="Clear current session to start a fresh box break. Stored scans remain on the server."
+        >
+          Clear session
+        </button>
       </header>
 
       {/* ── Body ── */}
