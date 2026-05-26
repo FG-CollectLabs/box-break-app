@@ -402,7 +402,7 @@ function ReviewCard({
   onAccept,
   onCorrect,
   onOverride,
-  imgScale = 1,
+  imgScale = 2,
 }: {
   entry: BreakEntry
   allEntries: BreakEntry[]
@@ -887,9 +887,9 @@ export default function App() {
         </div>
         <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>{acceptedCount} / {frontCount} accepted</span>
         <button
-          disabled={completedCount === 0}
+          disabled={frontCount === 0}
           onClick={() => downloadCSV(buildCSV(entries))}
-          style={{ background: completedCount === 0 ? 'var(--surface-2)' : 'var(--primary)', border: 'none', borderRadius: 6, color: completedCount === 0 ? 'var(--text-dim)' : '#fff', padding: '6px 16px', fontSize: 13, fontWeight: 600, cursor: completedCount === 0 ? 'not-allowed' : 'pointer' }}
+          style={{ background: frontCount === 0 ? 'var(--surface-2)' : 'var(--primary)', border: 'none', borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : '#fff', padding: '6px 16px', fontSize: 13, fontWeight: 600, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
         >
           Export CSV
         </button>
