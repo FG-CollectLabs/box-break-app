@@ -87,6 +87,7 @@ interface ApiResponse {
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const IDENTIFY_URL = 'https://ev-api.futuregadgetlabs.com/v1/scan/identify'
+const CATALOG_URL = 'https://ev-api.futuregadgetlabs.com/v1/scan/catalog'
 const MAX_CONCURRENT = 3
 const BACK_WAIT_TIMEOUT = 3000
 const BACK_WAIT_POLL = 500
@@ -201,23 +202,50 @@ function StatusChip({ status }: { status: BreakEntry['status'] }) {
 
 function CorrectionPanel({
   entry,
+  filterSetName,
   onSelect,
   onOverride,
   onClose,
 }: {
   entry: BreakEntry
+  filterSetName?: string
   onSelect: (candidate: ApiCandidate) => void
   onOverride: (name: string) => void
   onClose: () => void
 }) {
   const [search, setSearch] = useState('')
   const [overrideVal, setOverrideVal] = useState(entry.overrideName ?? entry.cardName ?? '')
+  const [liveResults, setLiveResults] = useState<ApiCandidate[] | null>(null)
+  const [liveLoading, setLiveLoading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
-  const candidates = entry.allCandidates ?? []
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const localCandidates = entry.allCandidates ?? []
 
-  const filtered = candidates.filter(c =>
-    !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.set_name.toLowerCase().includes(search.toLowerCase())
-  )
+  // Live catalog search when query >= 2 chars
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (search.length < 2) { setLiveResults(null); return }
+    debounceRef.current = setTimeout(async () => {
+      setLiveLoading(true)
+      try {
+        const params = new URLSearchParams({ q: search, limit: '20' })
+        if (filterSetName) params.set('set_name', filterSetName)
+        const res = await fetch(`${CATALOG_URL}?${params}`)
+        if (!res.ok) throw new Error()
+        const data = await res.json() as { results: ApiCandidate[] }
+        setLiveResults(data.results ?? [])
+      } catch {
+        setLiveResults(null)
+      } finally {
+        setLiveLoading(false)
+      }
+    }, 300)
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [search, filterSetName])
+
+  const displayed = search.length >= 2
+    ? (liveResults ?? localCandidates.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || c.set_name.toLowerCase().includes(search.toLowerCase())))
+    : localCandidates
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -228,13 +256,13 @@ function CorrectionPanel({
       if (e.key === 'Escape') { onClose(); return }
       const n = parseInt(e.key)
       if (!isNaN(n) && n >= 1 && n <= 9) {
-        const c = filtered[n - 1]
+        const c = displayed[n - 1]
         if (c) onSelect(c)
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [filtered, onSelect, onClose])
+  }, [displayed, onSelect, onClose])
 
   return (
     <div style={{ background: 'var(--surface-2)', border: '1px solid var(--primary)', borderRadius: 8, padding: 16, marginTop: 8 }}>
@@ -251,16 +279,21 @@ function CorrectionPanel({
         ref={inputRef}
         value={search}
         onChange={e => setSearch(e.target.value)}
-        placeholder="Search candidates… (1–9 to pick, Esc to close)"
+        placeholder="Type to search all cards… (1–9 to pick, Esc to close)"
         style={{ width: '100%', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', marginBottom: 12 }}
       />
 
       {/* Candidates grid */}
-      {candidates.length === 0 ? (
-        <div style={{ fontSize: 12, color: 'var(--text-dim)', padding: '12px 0' }}>No candidates returned by API for this scan</div>
-      ) : (
+      {liveLoading && <div style={{ fontSize: 12, color: 'var(--text-dim)', padding: '4px 0 8px' }}>Searching…</div>}
+      {!liveLoading && displayed.length === 0 && search.length < 2 && localCandidates.length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--text-dim)', padding: '12px 0' }}>No candidates — type a name to search all cards</div>
+      )}
+      {!liveLoading && displayed.length === 0 && search.length >= 2 && (
+        <div style={{ fontSize: 12, color: 'var(--text-dim)', padding: '12px 0' }}>No matches for "{search}"</div>
+      )}
+      {displayed.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 420, overflowY: 'auto', marginBottom: 12 }}>
-          {filtered.map((c, i) => (
+          {displayed.map((c, i) => (
             <div
               key={c.tcgplayer_product_id}
               onClick={() => onSelect(c)}
@@ -286,9 +319,6 @@ function CorrectionPanel({
               </div>
             </div>
           ))}
-          {filtered.length === 0 && (
-            <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>No matches for "{search}"</div>
-          )}
         </div>
       )}
 
@@ -368,6 +398,7 @@ function DropZone({ onFiles }: { onFiles: (files: File[]) => void }) {
 function ReviewCard({
   entry,
   allEntries,
+  filterSetName,
   onAccept,
   onCorrect,
   onOverride,
@@ -375,10 +406,11 @@ function ReviewCard({
 }: {
   entry: BreakEntry
   allEntries: BreakEntry[]
+  filterSetName?: string
   onAccept: (id: string) => void
   onCorrect: (id: string, candidate: ApiCandidate) => void
   onOverride: (id: string, name: string) => void
-  imgScale?: 1 | 2 | 4
+  imgScale?: 2 | 4
 }) {
   const [correcting, setCorrecting] = useState(false)
   const rw = 120 * imgScale, rh = Math.round(rw * 1.4)
@@ -469,6 +501,7 @@ function ReviewCard({
         {correcting && (
           <CorrectionPanel
             entry={entry}
+            filterSetName={filterSetName}
             onSelect={c => { onCorrect(entry.id, c); setCorrecting(false) }}
             onOverride={name => { onOverride(entry.id, name); setCorrecting(false) }}
             onClose={() => setCorrecting(false)}
@@ -700,7 +733,7 @@ export default function App() {
   const [setCode, setSetCode] = useState('')
   const [setName, setSetName] = useState('')
   const [deckName, setDeckName] = useState('')
-  const [imgScale, setImgScale] = useState<1 | 2 | 4>(1)
+  const [imgScale, setImgScale] = useState<2 | 4>(2)
   const [altBackMode, setAltBackMode] = useState(false)
   const altBackModeRef = useRef(false)
 
@@ -817,8 +850,8 @@ export default function App() {
     patchEntry(id, { accepted: !entry?.accepted, needsReview: false })
   }
 
-  const completedCount = entries.filter(e => e.status === 'done' || e.status === 'back_detected').length
-  const acceptedCount = entries.filter(e => e.accepted).length
+  const frontCount = entries.filter(e => e.status === 'done').length
+  const acceptedCount = entries.filter(e => e.accepted && e.status === 'done').length
 
   useEffect(() => { return () => { for (const e of entriesRef.current) URL.revokeObjectURL(e.previewUrl) } }, [])
 
@@ -846,13 +879,13 @@ export default function App() {
           </button>
           <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Size:</span>
           <ToggleGroup
-            options={[{ value: '1', label: '1×' }, { value: '2', label: '2×' }, { value: '4', label: '4×' }]}
+            options={[{ value: '2', label: '2×' }, { value: '4', label: '4×' }]}
             active={String(imgScale)}
-            onChange={v => setImgScale(Number(v) as 1 | 2 | 4)}
+            onChange={v => setImgScale(Number(v) as 2 | 4)}
             activeColor="var(--primary)"
           />
         </div>
-        <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>{acceptedCount} / {completedCount} accepted</span>
+        <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>{acceptedCount} / {frontCount} accepted</span>
         <button
           disabled={completedCount === 0}
           onClick={() => downloadCSV(buildCSV(entries))}
@@ -878,6 +911,7 @@ export default function App() {
                 key={e.id}
                 entry={e}
                 allEntries={entries}
+                filterSetName={setName || undefined}
                 onAccept={handleAccept}
                 onCorrect={handleCorrect}
                 onOverride={handleOverride}
