@@ -773,11 +773,13 @@ export default function App() {
 
   const entriesRef = useRef<BreakEntry[]>([])
   const setCodeRef = useRef('')
+  const setNameRef = useRef('')
   const activeScans = useRef(0)
   const queueRef = useRef<string[]>([])
 
   useEffect(() => { entriesRef.current = entries }, [entries])
   useEffect(() => { setCodeRef.current = setCode }, [setCode])
+  useEffect(() => { setNameRef.current = setName }, [setName])
 
   const patchEntry = useCallback((id: string, patch: Partial<BreakEntry>) => {
     setEntries(prev => {
@@ -816,7 +818,7 @@ export default function App() {
     const file = entriesRef.current[myIndex]?.file
     if (!file) { activeScans.current--; processNext(); return }
     patchEntry(id, { status: 'identifying' })
-    callIdentifyApi(file, setCodeRef.current)
+    callIdentifyApi(file, setNameRef.current)
       .then(async (res: ApiResponse) => {
         if (res.confidence === 'back' || res.back_detected) {
           const preceding = await findPrecedingFront(myIndex)
@@ -877,7 +879,7 @@ export default function App() {
         <h1 style={{ fontSize: 16, fontWeight: 700, color: 'var(--primary)', marginRight: 4, whiteSpace: 'nowrap' }}>Box Break Scanner</h1>
         <SetPicker
           selectedCode={setCode}
-          onSelect={(code, name, _game, deck) => { setSetCode(code); setSetName(name); setDeckName(deck ?? ''); setCodeRef.current = code }}
+          onSelect={(code, name, _game, deck) => { setSetCode(code); setSetName(name); setDeckName(deck ?? ''); setCodeRef.current = code; setNameRef.current = name }}
         />
         {setCode && (
           <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>
