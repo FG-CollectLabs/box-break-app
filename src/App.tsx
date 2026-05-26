@@ -163,8 +163,8 @@ function buildCSV(entries: BreakEntry[]): string {
   const rows: string[] = ['card_name,card_number,set_name,tcgplayer_id,quantity,front_image_urls,back_image_urls']
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`
   for (const card of cards) {
-    const fronts = card.instances.map(i => i.front.scanUrl ?? '').join('|')
-    const backs = card.instances.map(i => i.back?.scanUrl ?? '').join('|')
+    const fronts = card.instances.map(i => i.front.candidateImageUrl ?? i.front.scanUrl ?? '').join('|')
+    const backs = card.instances.map(i => i.back?.scanUrl ?? i.front.candidateImageUrl ?? '').join('|')
     rows.push([q(card.cardName), q(card.cardNumber ?? ''), q(card.setName ?? ''), card.tcgplayerId?.toString() ?? '', card.instances.length.toString(), q(fronts), q(backs)].join(','))
   }
   return rows.join('\n')
