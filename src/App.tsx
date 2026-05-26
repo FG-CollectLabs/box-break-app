@@ -56,6 +56,7 @@ interface BreakEntry {
   pairedFrontId?: string
   errorMsg?: string
   overrideName?: string
+  accepted?: boolean
 }
 
 interface BreakInstance {
@@ -310,124 +311,21 @@ function CorrectionPanel({
   )
 }
 
-// ─── Queue Item ───────────────────────────────────────────────────────────────
+// ─── Queue Item (compact status row for right panel) ─────────────────────────
 
-function QueueItem({
-  entry,
-  onOverride,
-  onCorrect,
-  imgScale = 1,
-}: {
-  entry: BreakEntry
-  onOverride: (id: string, name: string) => void
-  onCorrect: (id: string, candidate: ApiCandidate) => void
-  imgScale?: 1 | 2 | 4
-}) {
-  const [correcting, setCorrecting] = useState(false)
-  const canCorrect = entry.status === 'done' || (entry.status === 'back_detected' && !!entry.pairedFrontId)
-  const sw = 80 * imgScale, sh = 112 * imgScale
-  const cw = 60 * imgScale, ch = 84 * imgScale
-
+function QueueItem({ entry }: { entry: BreakEntry }) {
   return (
-    <div style={{ padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-        {/* Scan preview */}
-        <div style={{ flexShrink: 0, textAlign: 'center' }}>
-          <img
-            src={entry.previewUrl}
-            alt=""
-            style={{ width: sw, height: sh, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', display: 'block' }}
-          />
-          <span style={{ fontSize: 9, color: '#4ade80', fontWeight: 600 }}>📷 scan</span>
-        </div>
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={entry.file.name}>
-            {entry.file.name}
-          </div>
-          <StatusChip status={entry.status} />
-          {entry.status === 'done' && entry.cardName && (
-            <div style={{ fontSize: 11, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={entry.overrideName ?? entry.cardName}>
-              {entry.overrideName ? <em>{entry.overrideName}</em> : entry.cardName}
-            </div>
-          )}
-          {entry.status === 'done' && entry.setName && (
-            <div style={{ fontSize: 10, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {entry.setName}
-            </div>
-          )}
-          {entry.status === 'back_detected' && (
-            <div style={{ fontSize: 11, color: 'var(--purple)' }}>
-              {entry.pairedFrontId ? 'Paired with front' : 'No front found'}
-            </div>
-          )}
-          {entry.status === 'error' && entry.errorMsg && (
-            <div style={{ fontSize: 11, color: 'var(--danger)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={entry.errorMsg}>
-              {entry.errorMsg}
-            </div>
-          )}
-          {/* Correct button */}
-          {canCorrect && (
-            <button
-              onClick={() => setCorrecting(c => !c)}
-              style={{
-                background: correcting ? 'rgba(99,102,241,0.2)' : 'var(--surface-2)',
-                border: `1px solid ${correcting ? 'var(--primary)' : 'var(--border)'}`,
-                borderRadius: 4, color: correcting ? 'var(--primary)' : 'var(--text-dim)',
-                padding: '2px 8px', fontSize: 10, cursor: 'pointer', fontFamily: 'inherit',
-                alignSelf: 'flex-start', marginTop: 2,
-              }}
-            >
-              {correcting ? 'Close' : '✎ Correct'}
-            </button>
-          )}
-        </div>
-
-        {/* Stock image from TCGPlayer */}
-        {entry.status === 'done' && entry.candidateImageUrl && (
-          <div style={{ flexShrink: 0, textAlign: 'center' }}>
-            <img
-              src={entry.candidateImageUrl}
-              alt=""
-              onError={e => { e.currentTarget.style.display = 'none' }}
-              style={{ width: cw, height: ch, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', display: 'block' }}
-            />
-            <span style={{ fontSize: 9, color: 'var(--primary)', fontWeight: 600 }}>stock</span>
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--border)' }}>
+      <img src={entry.previewUrl} alt="" style={{ width: 32, height: 45, objectFit: 'cover', borderRadius: 3, border: '1px solid var(--border)', flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.file.name}</div>
+        <StatusChip status={entry.status} />
+        {(entry.status === 'done') && (
+          <div style={{ fontSize: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: entry.accepted ? 'var(--success)' : 'var(--text)' }}>
+            {entry.accepted ? '✓ ' : ''}{entry.overrideName ?? entry.cardName ?? ''}
           </div>
         )}
       </div>
-
-      {/* Correction panel */}
-      {correcting && (
-        <>
-          <div style={{ marginTop: 8, display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            <div style={{ textAlign: 'center', flexShrink: 0 }}>
-              <img
-                src={entry.previewUrl}
-                alt=""
-                style={{ width: 300, height: 420, objectFit: 'contain', borderRadius: 6, border: '2px solid #4ade80', background: '#000', display: 'block' }}
-              />
-              <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 600 }}>📷 your scan</span>
-            </div>
-            {entry.candidateImageUrl && (
-              <div style={{ textAlign: 'center', flexShrink: 0 }}>
-                <img
-                  src={entry.candidateImageUrl}
-                  alt=""
-                  onError={e => { e.currentTarget.style.display = 'none' }}
-                  style={{ width: 300, height: 420, objectFit: 'contain', borderRadius: 6, border: '2px solid var(--border)', background: '#000', display: 'block' }}
-                />
-                <span style={{ fontSize: 10, color: 'var(--primary)', fontWeight: 600 }}>stock — current match</span>
-              </div>
-            )}
-          </div>
-          <CorrectionPanel
-            entry={entry}
-            onSelect={c => { onCorrect(entry.id, c); setCorrecting(false) }}
-            onOverride={name => { onOverride(entry.id, name); setCorrecting(false) }}
-            onClose={() => setCorrecting(false)}
-          />
-        </>
-      )}
     </div>
   )
 }
@@ -543,6 +441,122 @@ function CardRow({ card, imgScale = 1 }: { card: BreakCard; imgScale?: 1 | 2 | 4
             {card.instances.map((inst, idx) => <InstanceThumbs key={idx} inst={inst} imgScale={imgScale} />)}
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Review Card (left panel per-scan acceptance flow) ───────────────────────
+
+function ReviewCard({
+  entry,
+  allEntries,
+  onAccept,
+  onCorrect,
+  onOverride,
+  imgScale = 1,
+}: {
+  entry: BreakEntry
+  allEntries: BreakEntry[]
+  onAccept: (id: string) => void
+  onCorrect: (id: string, candidate: ApiCandidate) => void
+  onOverride: (id: string, name: string) => void
+  imgScale?: 1 | 2 | 4
+}) {
+  const [correcting, setCorrecting] = useState(false)
+  const rw = 120 * imgScale, rh = Math.round(rw * 1.4)
+
+  // ── Accepted: collapsed row ──
+  if (entry.accepted && entry.status === 'done') {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', marginBottom: 4, border: '1px solid var(--success)', borderRadius: 6, background: 'rgba(34,197,94,0.06)', cursor: 'pointer' }} onClick={() => onAccept(entry.id)} title="Click to un-accept">
+        <img src={entry.previewUrl} alt="" style={{ width: 28, height: 40, objectFit: 'cover', borderRadius: 3, flexShrink: 0 }} />
+        <span style={{ color: 'var(--success)', fontWeight: 700, flexShrink: 0, fontSize: 14 }}>✓</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.overrideName ?? entry.cardName}</div>
+          <div style={{ fontSize: 10, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.setName}</div>
+        </div>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0 }}>↩ undo</span>
+      </div>
+    )
+  }
+
+  // ── Back detected: auto-collapsed ──
+  if (entry.status === 'back_detected') {
+    const front = allEntries.find(e => e.id === entry.pairedFrontId)
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', marginBottom: 4, border: '1px solid var(--border)', borderRadius: 6, opacity: 0.55 }}>
+        <img src={entry.previewUrl} alt="" style={{ width: 28, height: 40, objectFit: 'cover', borderRadius: 3, flexShrink: 0 }} />
+        <span style={{ fontSize: 10, color: 'var(--purple)' }}>📷 back{front?.cardName ? ` · ${front.cardName}` : ''}</span>
+      </div>
+    )
+  }
+
+  // ── In-progress ──
+  if (entry.status === 'queued' || entry.status === 'identifying') {
+    return (
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', marginBottom: 6, border: '1px solid var(--border)', borderRadius: 6 }}>
+        <img src={entry.previewUrl} alt="" style={{ width: 40, height: 56, objectFit: 'cover', borderRadius: 4, flexShrink: 0 }} />
+        <div><StatusChip status={entry.status} /><div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>{entry.file.name}</div></div>
+      </div>
+    )
+  }
+
+  // ── Full review card (done or error) ──
+  const canCorrect = entry.status === 'done' || entry.status === 'error'
+  return (
+    <div style={{ border: `1px solid ${entry.status === 'error' ? 'var(--danger)' : entry.needsReview ? 'var(--warning)' : 'var(--border)'}`, borderRadius: 8, marginBottom: 10, background: 'var(--surface)', overflow: 'hidden' }}>
+      <div style={{ padding: 12 }}>
+        {/* Images row */}
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 10, flexWrap: 'wrap' }}>
+          <div style={{ textAlign: 'center', flexShrink: 0 }}>
+            <img src={entry.previewUrl} alt="" style={{ width: rw, height: rh, objectFit: 'contain', borderRadius: 5, border: '2px solid #4ade80', background: '#000', display: 'block' }} />
+            <span style={{ fontSize: 9, color: '#4ade80', fontWeight: 600 }}>📷 scan</span>
+          </div>
+          {entry.candidateImageUrl && (
+            <div style={{ textAlign: 'center', flexShrink: 0 }}>
+              <img src={entry.candidateImageUrl} alt="" onError={e => { e.currentTarget.style.display = 'none' }} style={{ width: rw, height: rh, objectFit: 'contain', borderRadius: 5, border: '2px solid var(--border)', background: '#000', display: 'block' }} />
+              <span style={{ fontSize: 9, color: 'var(--primary)', fontWeight: 600 }}>stock</span>
+            </div>
+          )}
+          {/* Card info + actions */}
+          <div style={{ flex: 1, minWidth: 120, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <StatusChip status={entry.status} />
+            {entry.status === 'done' && (
+              <>
+                <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.2 }}>{entry.overrideName ?? entry.cardName ?? 'Unknown'}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>{entry.setName}</div>
+                {entry.cardNumber && <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>#{entry.cardNumber}</div>}
+                <button
+                  onClick={() => onAccept(entry.id)}
+                  style={{ marginTop: 4, background: 'var(--success)', border: 'none', borderRadius: 6, color: '#fff', padding: '8px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                >
+                  ✓ Accept
+                </button>
+              </>
+            )}
+            {entry.status === 'error' && (
+              <div style={{ fontSize: 11, color: 'var(--danger)', wordBreak: 'break-word' }}>{entry.errorMsg}</div>
+            )}
+            {canCorrect && (
+              <button
+                onClick={() => setCorrecting(c => !c)}
+                style={{ background: correcting ? 'rgba(99,102,241,0.15)' : 'var(--surface-2)', border: `1px solid ${correcting ? 'var(--primary)' : 'var(--border)'}`, borderRadius: 6, color: correcting ? 'var(--primary)' : 'var(--text-dim)', padding: '6px 12px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}
+              >
+                {correcting ? '✕ Close' : '✎ Correct'}
+              </button>
+            )}
+          </div>
+        </div>
+        {/* Inline correction panel */}
+        {correcting && (
+          <CorrectionPanel
+            entry={entry}
+            onSelect={c => { onCorrect(entry.id, c); setCorrecting(false) }}
+            onOverride={name => { onOverride(entry.id, name); setCorrecting(false) }}
+            onClose={() => setCorrecting(false)}
+          />
+        )}
       </div>
     </div>
   )
@@ -770,6 +784,8 @@ export default function App() {
   const [setName, setSetName] = useState('')
   const [deckName, setDeckName] = useState('')
   const [imgScale, setImgScale] = useState<1 | 2 | 4>(1)
+  const [altBackMode, setAltBackMode] = useState(false)
+  const altBackModeRef = useRef(false)
 
   const entriesRef = useRef<BreakEntry[]>([])
   const setCodeRef = useRef('')
@@ -780,6 +796,7 @@ export default function App() {
   useEffect(() => { entriesRef.current = entries }, [entries])
   useEffect(() => { setCodeRef.current = setCode }, [setCode])
   useEffect(() => { setNameRef.current = setName }, [setName])
+  useEffect(() => { altBackModeRef.current = altBackMode }, [altBackMode])
 
   const patchEntry = useCallback((id: string, patch: Partial<BreakEntry>) => {
     setEntries(prev => {
@@ -843,9 +860,20 @@ export default function App() {
   }, [patchEntry])
 
   function addFiles(files: File[]) {
-    const newEntries: BreakEntry[] = files.map(file => ({ id: makeId(), file, previewUrl: URL.createObjectURL(file), status: 'queued' as const }))
+    const alt = altBackModeRef.current
+    const newEntries: BreakEntry[] = files.map((file, i) => ({
+      id: makeId(), file, previewUrl: URL.createObjectURL(file),
+      status: (alt && i % 2 === 1 ? 'back_detected' : 'queued') as BreakEntry['status'],
+      confidence: alt && i % 2 === 1 ? 'back' as const : undefined,
+    }))
+    // Pre-pair backs in alt-back mode
+    if (alt) {
+      for (let i = 1; i < newEntries.length; i += 2) {
+        if (newEntries[i - 1]) newEntries[i].pairedFrontId = newEntries[i - 1].id
+      }
+    }
     setEntries(prev => { const next = [...prev, ...newEntries]; entriesRef.current = next; return next })
-    for (const e of newEntries) queueRef.current.push(e.id)
+    for (const e of newEntries) if (e.status === 'queued') queueRef.current.push(e.id)
     const slots = MAX_CONCURRENT - activeScans.current
     for (let i = 0; i < slots; i++) processNext()
   }
@@ -867,8 +895,13 @@ export default function App() {
     })
   }
 
+  function handleAccept(id: string) {
+    const entry = entriesRef.current.find(e => e.id === id)
+    patchEntry(id, { accepted: !entry?.accepted, needsReview: false })
+  }
+
   const completedCount = entries.filter(e => e.status === 'done' || e.status === 'back_detected').length
-  const cards = groupEntries(entries)
+  const acceptedCount = entries.filter(e => e.accepted).length
 
   useEffect(() => { return () => { for (const e of entriesRef.current) URL.revokeObjectURL(e.previewUrl) } }, [])
 
@@ -887,6 +920,13 @@ export default function App() {
           </span>
         )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+          <button
+            onClick={() => setAltBackMode(m => !m)}
+            style={{ background: altBackMode ? 'rgba(168,85,247,0.2)' : 'var(--surface-2)', border: `1px solid ${altBackMode ? 'var(--purple)' : 'var(--border)'}`, borderRadius: 6, color: altBackMode ? 'var(--purple)' : 'var(--text-dim)', padding: '5px 10px', fontSize: 11, fontWeight: altBackMode ? 700 : 400, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}
+            title="Every other photo is the back of the preceding card"
+          >
+            {altBackMode ? '⇌ Alt back ON' : '⇌ Alt back'}
+          </button>
           <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Size:</span>
           <ToggleGroup
             options={[{ value: '1', label: '1×' }, { value: '2', label: '2×' }, { value: '4', label: '4×' }]}
@@ -895,7 +935,7 @@ export default function App() {
             activeColor="var(--primary)"
           />
         </div>
-        <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>{completedCount} / {entries.length} processed</span>
+        <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>{acceptedCount} / {completedCount} accepted</span>
         <button
           disabled={completedCount === 0}
           onClick={() => downloadCSV(buildCSV(entries))}
@@ -907,36 +947,39 @@ export default function App() {
 
       {/* ── Body ── */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* Left: identified cards */}
+        {/* Left: review + acceptance flow */}
         <main style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: 16 }}>
-          {cards.length === 0 ? (
+          {entries.length === 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)', gap: 8 }}>
               <div style={{ fontSize: 48, opacity: 0.3 }}>🃏</div>
-              <div style={{ fontSize: 15 }}>Drop card scans to get started</div>
-              <div style={{ fontSize: 12 }}>Identified cards will appear here, grouped by card</div>
+              <div style={{ fontSize: 15 }}>Drop card scans to start reviewing</div>
+              <div style={{ fontSize: 12 }}>Accept or correct each identification, then export</div>
             </div>
           ) : (
-            <>
-              <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                {cards.length} unique card{cards.length !== 1 ? 's' : ''} · {cards.reduce((a, c) => a + c.instances.length, 0)} total copies
-              </div>
-              {cards.map(card => <CardRow key={card.key} card={card} imgScale={imgScale} />)}
-            </>
+            entries.map(e => (
+              <ReviewCard
+                key={e.id}
+                entry={e}
+                allEntries={entries}
+                onAccept={handleAccept}
+                onCorrect={handleCorrect}
+                onOverride={handleOverride}
+                imgScale={imgScale}
+              />
+            ))
           )}
         </main>
 
-        {/* Right: drop zone + queue */}
-        <aside style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--border)', background: 'var(--surface)' }}>
+        {/* Right: drop zone + compact queue */}
+        <aside style={{ width: 280, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--border)', background: 'var(--surface)' }}>
           <div style={{ padding: 12, borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
             <DropZone onFiles={addFiles} />
           </div>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '0 12px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '0 10px' }}>
             {entries.length === 0 ? (
               <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 12, padding: '24px 0' }}>No images yet</div>
             ) : (
-              [...entries].reverse().map(e => (
-                <QueueItem key={e.id} entry={e} onOverride={handleOverride} onCorrect={handleCorrect} imgScale={imgScale} />
-              ))
+              [...entries].reverse().map(e => <QueueItem key={e.id} entry={e} />)
             )}
           </div>
         </aside>
