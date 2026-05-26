@@ -104,13 +104,12 @@ function extractCardNumber(name: string): string | undefined {
 async function callIdentifyApi(file: File, setCode: string): Promise<ApiResponse> {
   const fd = new FormData()
   fd.append('image', file)
-  const url = setCode.trim()
-    ? `${IDENTIFY_URL}?restrict_set=${encodeURIComponent(setCode.trim())}`
-    : IDENTIFY_URL
+  // restrict_set must be a form field — ev-api proxies the body but strips query params
+  if (setCode.trim()) fd.append('restrict_set', setCode.trim())
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 90_000)
   try {
-    const res = await fetch(url, { method: 'POST', body: fd, signal: ctrl.signal })
+    const res = await fetch(IDENTIFY_URL, { method: 'POST', body: fd, signal: ctrl.signal })
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText)
       throw new Error(`API ${res.status}: ${text}`)
@@ -228,91 +227,76 @@ function CorrectionPanel({
   }, [filtered, onSelect, onClose])
 
   return (
-    <div style={{ background: 'var(--surface-2)', border: '1px solid var(--primary)', borderRadius: 8, padding: 12, marginTop: 6 }}>
+    <div style={{ background: 'var(--surface-2)', border: '1px solid var(--primary)', borderRadius: 8, padding: 16, marginTop: 8 }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
           Correct Identification
         </span>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', fontSize: 16, cursor: 'pointer', lineHeight: 1, padding: '0 2px' }}>×</button>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', fontSize: 20, cursor: 'pointer', lineHeight: 1, padding: '0 4px' }}>×</button>
       </div>
 
-      {/* Large scan image + candidates side by side */}
-      <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
-        {/* Scan preview */}
-        <div style={{ flexShrink: 0 }}>
-          <img
-            src={entry.previewUrl}
-            alt="scan"
-            style={{ width: 96, height: 134, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)', display: 'block' }}
-          />
-          <div style={{ fontSize: 9, color: 'var(--text-dim)', textAlign: 'center', marginTop: 3 }}>Scanned</div>
-        </div>
+      {/* Search */}
+      <input
+        ref={inputRef}
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        placeholder="Search candidates… (1–9 to pick, Esc to close)"
+        style={{ width: '100%', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', marginBottom: 12 }}
+      />
 
-        {/* Candidates grid */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <input
-            ref={inputRef}
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search candidates… (1-9 to pick)"
-            style={{ width: '100%', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '4px 8px', fontSize: 11, fontFamily: 'inherit', marginBottom: 8 }}
-          />
-          {candidates.length === 0 ? (
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', padding: '8px 0' }}>No candidates from API</div>
-          ) : (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 200, overflowY: 'auto' }}>
-              {filtered.map((c, i) => (
-                <div
-                  key={c.tcgplayer_product_id}
-                  onClick={() => onSelect(c)}
-                  title={`${c.name} — ${c.set_name}`}
-                  style={{ cursor: 'pointer', border: '1px solid var(--border)', borderRadius: 5, overflow: 'hidden', width: 68, flexShrink: 0, position: 'relative' }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--primary)' }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)' }}
-                >
-                  {/* Shortcut badge */}
-                  {i < 9 && (
-                    <div style={{ position: 'absolute', top: 2, left: 2, background: 'rgba(0,0,0,0.7)', color: '#fff', fontSize: 9, fontWeight: 700, borderRadius: 3, padding: '0 3px', lineHeight: '14px' }}>
-                      {i + 1}
-                    </div>
-                  )}
-                  <img
-                    src={c.image_url}
-                    alt=""
-                    onError={e => { e.currentTarget.style.display = 'none' }}
-                    style={{ width: 66, height: 92, objectFit: 'cover', display: 'block' }}
-                  />
-                  <div style={{ padding: '3px 4px', background: 'var(--surface-2)' }}>
-                    <div style={{ fontSize: 9, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>{c.name}</div>
-                    <div style={{ fontSize: 9, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.set_name}</div>
-                  </div>
+      {/* Candidates grid */}
+      {candidates.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--text-dim)', padding: '12px 0' }}>No candidates returned by API for this scan</div>
+      ) : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 420, overflowY: 'auto', marginBottom: 12 }}>
+          {filtered.map((c, i) => (
+            <div
+              key={c.tcgplayer_product_id}
+              onClick={() => onSelect(c)}
+              title={`${c.name} — ${c.set_name}`}
+              style={{ cursor: 'pointer', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', width: 110, flexShrink: 0, position: 'relative' }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--primary)' }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)' }}
+            >
+              {i < 9 && (
+                <div style={{ position: 'absolute', top: 3, left: 3, background: 'rgba(0,0,0,0.75)', color: '#fff', fontSize: 11, fontWeight: 700, borderRadius: 4, padding: '1px 5px' }}>
+                  {i + 1}
                 </div>
-              ))}
-              {filtered.length === 0 && (
-                <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>No matches</div>
               )}
+              <img
+                src={c.image_url}
+                alt=""
+                onError={e => { e.currentTarget.style.display = 'none' }}
+                style={{ width: 108, height: 151, objectFit: 'cover', display: 'block' }}
+              />
+              <div style={{ padding: '4px 6px', background: 'var(--surface)' }}>
+                <div style={{ fontSize: 10, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>{c.name}</div>
+                <div style={{ fontSize: 10, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.set_name}</div>
+              </div>
             </div>
+          ))}
+          {filtered.length === 0 && (
+            <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>No matches for "{search}"</div>
           )}
         </div>
-      </div>
+      )}
 
       {/* Manual override */}
-      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', gap: 6 }}>
+      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10, display: 'flex', gap: 8 }}>
         <input
           value={overrideVal}
           onChange={e => setOverrideVal(e.target.value)}
           placeholder="Or type card name manually…"
-          style={{ flex: 1, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '4px 8px', fontSize: 11, fontFamily: 'inherit' }}
+          style={{ flex: 1, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '6px 10px', fontSize: 12, fontFamily: 'inherit' }}
         />
         <button
           onClick={() => { onOverride(overrideVal); onClose() }}
-          style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '4px 10px', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}
+          style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '6px 14px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}
         >
           Set name
         </button>
       </div>
-      <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 4 }}>Press 1–9 to select candidate · Esc to close</div>
     </div>
   )
 }
@@ -406,14 +390,14 @@ function QueueItem({
       {/* Correction panel */}
       {correcting && (
         <>
-          <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+          <div style={{ marginTop: 8, display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
             <div style={{ textAlign: 'center', flexShrink: 0 }}>
               <img
                 src={entry.previewUrl}
                 alt=""
-                style={{ width: 240, height: 336, objectFit: 'contain', borderRadius: 6, border: '1px solid var(--primary)', background: '#000', display: 'block' }}
+                style={{ width: 300, height: 420, objectFit: 'contain', borderRadius: 6, border: '2px solid #4ade80', background: '#000', display: 'block' }}
               />
-              <span style={{ fontSize: 9, color: '#4ade80', fontWeight: 600 }}>📷 scan — large view</span>
+              <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 600 }}>📷 your scan</span>
             </div>
             {entry.candidateImageUrl && (
               <div style={{ textAlign: 'center', flexShrink: 0 }}>
@@ -421,9 +405,9 @@ function QueueItem({
                   src={entry.candidateImageUrl}
                   alt=""
                   onError={e => { e.currentTarget.style.display = 'none' }}
-                  style={{ width: 240, height: 336, objectFit: 'contain', borderRadius: 6, border: '1px solid var(--border)', background: '#000', display: 'block' }}
+                  style={{ width: 300, height: 420, objectFit: 'contain', borderRadius: 6, border: '2px solid var(--border)', background: '#000', display: 'block' }}
                 />
-                <span style={{ fontSize: 9, color: 'var(--primary)', fontWeight: 600 }}>stock — current match</span>
+                <span style={{ fontSize: 10, color: 'var(--primary)', fontWeight: 600 }}>stock — current match</span>
               </div>
             )}
           </div>
@@ -913,7 +897,7 @@ export default function App() {
       {/* ── Body ── */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* Left: identified cards */}
-        <main style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+        <main style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: 16 }}>
           {cards.length === 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)', gap: 8 }}>
               <div style={{ fontSize: 48, opacity: 0.3 }}>🃏</div>
@@ -931,7 +915,7 @@ export default function App() {
         </main>
 
         {/* Right: drop zone + queue */}
-        <aside style={{ width: 320, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--border)', background: 'var(--surface)' }}>
+        <aside style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--border)', background: 'var(--surface)' }}>
           <div style={{ padding: 12, borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
             <DropZone onFiles={addFiles} />
           </div>
