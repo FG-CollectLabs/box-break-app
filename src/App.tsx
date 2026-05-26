@@ -734,7 +734,7 @@ export default function App() {
   const [setName, setSetName] = useState('')
   const [deckName, setDeckName] = useState('')
   const [imgScale, setImgScale] = useState<2 | 4>(2)
-  const [altBackMode, setAltBackMode] = useState(false)
+  const [altBackMode, setAltBackMode] = useState(true)
   const altBackModeRef = useRef(false)
 
   const entriesRef = useRef<BreakEntry[]>([])
