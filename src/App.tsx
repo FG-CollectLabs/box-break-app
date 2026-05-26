@@ -102,22 +102,31 @@ function extractCardNumber(name: string): string | undefined {
 }
 
 async function callIdentifyApi(file: File, setCode: string): Promise<ApiResponse> {
-  const fd = new FormData()
-  fd.append('image', file)
-  // restrict_set must be a form field — ev-api proxies the body but strips query params
-  if (setCode.trim()) fd.append('restrict_set', setCode.trim())
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 90_000)
-  try {
-    const res = await fetch(IDENTIFY_URL, { method: 'POST', body: fd, signal: ctrl.signal })
-    if (!res.ok) {
-      const text = await res.text().catch(() => res.statusText)
-      throw new Error(`API ${res.status}: ${text}`)
+  async function post(restrict: string): Promise<ApiResponse> {
+    const fd = new FormData()
+    fd.append('image', file)
+    // restrict_set must be a form field — ev-api proxies the body but strips query params
+    if (restrict) fd.append('restrict_set', restrict)
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 90_000)
+    try {
+      const res = await fetch(IDENTIFY_URL, { method: 'POST', body: fd, signal: ctrl.signal })
+      if (!res.ok) {
+        const text = await res.text().catch(() => res.statusText)
+        throw new Error(`API ${res.status}: ${text}`)
+      }
+      return (await res.json()) as ApiResponse
+    } finally {
+      clearTimeout(timer)
     }
-    return (await res.json()) as ApiResponse
-  } finally {
-    clearTimeout(timer)
   }
+
+  const result = await post(setCode.trim())
+  // If the set restriction returned zero candidates (set not yet indexed), fall back to global search
+  if (setCode.trim() && !result.back_detected && (!result.candidates || result.candidates.length === 0)) {
+    return post('')
+  }
+  return result
 }
 
 function groupEntries(entries: BreakEntry[]): BreakCard[] {
