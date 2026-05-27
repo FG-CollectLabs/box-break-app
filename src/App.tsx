@@ -243,9 +243,14 @@ function CorrectionPanel({
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
   }, [search, filterSetName])
 
+  // In a set-restricted session, hide "(Surge Foil)" variants — they're a separate
+  // premium product and shouldn't appear in a standard commander deck break.
+  const filterSurge = (list: ApiCandidate[]) =>
+    filterSetName ? list.filter(c => !c.name.includes('(Surge Foil)')) : list
+
   const displayed = search.length >= 2
-    ? (liveResults ?? localCandidates.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || c.set_name.toLowerCase().includes(search.toLowerCase())))
-    : localCandidates
+    ? filterSurge(liveResults ?? localCandidates.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || c.set_name.toLowerCase().includes(search.toLowerCase())))
+    : filterSurge(localCandidates)
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -308,7 +313,7 @@ function CorrectionPanel({
                 </div>
               )}
               <img
-                src={c.image_url}
+                src={c.image_url || `https://tcgplayer-cdn.tcgplayer.com/product/${c.tcgplayer_product_id}_in_1000x1000.jpg`}
                 alt=""
                 onError={e => { e.currentTarget.style.display = 'none' }}
                 style={{ width: 108, height: 151, objectFit: 'cover', display: 'block' }}
