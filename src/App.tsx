@@ -789,11 +789,19 @@ export default function App() {
     const id = queueRef.current.shift()!
     activeScans.current++
     const myIndex = entriesRef.current.findIndex(e => e.id === id)
-    const file = entriesRef.current[myIndex]?.file
+    const entry = entriesRef.current[myIndex]
+    const file = entry?.file
     if (!file) { activeScans.current--; processNext(); return }
+    const wasAltBack = entry?.status === 'back_detected'
     patchEntry(id, { status: 'identifying' })
     callIdentifyApi(file, setNameRef.current)
       .then(async (res: ApiResponse) => {
+        if (wasAltBack) {
+          // Alt-back mode: entry was pre-tagged as a card back — just store the scan URL,
+          // ignore what the identify API thinks it is
+          patchEntry(id, { status: 'back_detected', confidence: 'back', scanUrl: res.front_image })
+          return
+        }
         if (res.confidence === 'back' || res.back_detected) {
           const existing = entriesRef.current[myIndex]
           const preceding = await findPrecedingFront(myIndex)
