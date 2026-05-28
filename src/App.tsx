@@ -88,6 +88,7 @@ interface ApiResponse {
 
 const IDENTIFY_URL = 'https://ev-api.futuregadgetlabs.com/v1/scan/identify'
 const CATALOG_URL = 'https://ev-api.futuregadgetlabs.com/v1/scan/catalog'
+const PURGE_SCANS_URL = 'https://ev-api.futuregadgetlabs.com/v1/scan/scans'
 const MAX_CONCURRENT = 3
 const BACK_WAIT_TIMEOUT = 3000
 const BACK_WAIT_POLL = 500
@@ -160,12 +161,13 @@ function groupEntries(entries: BreakEntry[]): BreakCard[] {
 
 function buildCSV(entries: BreakEntry[]): string {
   const cards = groupEntries(entries)
-  const rows: string[] = ['card_name,card_number,set_name,tcgplayer_id,quantity,front_image_urls,back_image_urls']
+  const rows: string[] = ['card_name,card_number,set_name,tcgplayer_id,quantity,front_image_urls,back_image_urls,stock_image_url']
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`
   for (const card of cards) {
-    const fronts = card.instances.map(i => i.front.candidateImageUrl ?? i.front.scanUrl ?? '').join('|')
-    const backs = card.instances.map(i => i.back?.scanUrl ?? i.front.candidateImageUrl ?? '').join('|')
-    rows.push([q(card.cardName), q(card.cardNumber ?? ''), q(card.setName ?? ''), card.tcgplayerId?.toString() ?? '', card.instances.length.toString(), q(fronts), q(backs)].join(','))
+    const fronts = card.instances.map(i => i.front.scanUrl ?? '').join('|')
+    const backs = card.instances.map(i => i.back?.scanUrl ?? '').join('|')
+    const stockUrl = card.instances[0]?.front.candidateImageUrl ?? ''
+    rows.push([q(card.cardName), q(card.cardNumber ?? ''), q(card.setName ?? ''), card.tcgplayerId?.toString() ?? '', card.instances.length.toString(), q(fronts), q(backs), q(stockUrl)].join(','))
   }
   return rows.join('\n')
 }
@@ -900,17 +902,18 @@ export default function App() {
         </button>
         <button
           disabled={entries.length === 0}
-          onClick={() => {
-            if (!confirm(`Clear ${entries.length} scan${entries.length !== 1 ? 's' : ''} from this session? Stored images on the server are kept until purged separately.`)) return;
+          onClick={async () => {
+            if (!confirm(`Clear ${entries.length} scan${entries.length !== 1 ? 's' : ''}? This will delete all stored scan images from the server.`)) return;
+            try { await fetch(PURGE_SCANS_URL, { method: 'DELETE' }) } catch (_) { /* best-effort */ }
             for (const e of entries) URL.revokeObjectURL(e.previewUrl);
             setEntries([]);
             entriesRef.current = [];
             queueRef.current = [];
           }}
           style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, color: entries.length === 0 ? 'var(--text-dim)' : 'var(--text)', padding: '6px 12px', fontSize: 12, cursor: entries.length === 0 ? 'not-allowed' : 'pointer' }}
-          title="Clear current session to start a fresh box break. Stored scans remain on the server."
+          title="Delete all stored scan images from the server and clear this session."
         >
-          Clear session
+          Clear scans
         </button>
       </header>
 
