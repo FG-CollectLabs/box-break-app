@@ -795,8 +795,9 @@ export default function App() {
     callIdentifyApi(file, setNameRef.current)
       .then(async (res: ApiResponse) => {
         if (res.confidence === 'back' || res.back_detected) {
+          const existing = entriesRef.current[myIndex]
           const preceding = await findPrecedingFront(myIndex)
-          patchEntry(id, { status: 'back_detected', confidence: 'back', scanUrl: res.front_image, pairedFrontId: preceding?.id })
+          patchEntry(id, { status: 'back_detected', confidence: 'back', scanUrl: res.front_image, pairedFrontId: existing?.pairedFrontId ?? preceding?.id })
         } else {
           const top = res.candidates?.[0]
           const cardName = top?.name
@@ -830,7 +831,8 @@ export default function App() {
       }
     }
     setEntries(prev => { const next = [...prev, ...newEntries]; entriesRef.current = next; return next })
-    for (const e of newEntries) if (e.status === 'queued') queueRef.current.push(e.id)
+    // Queue all entries — alt-back 'back_detected' entries also need API processing to get a scanUrl
+    for (const e of newEntries) queueRef.current.push(e.id)
     const slots = MAX_CONCURRENT - activeScans.current
     for (let i = 0; i < slots; i++) processNext()
   }
