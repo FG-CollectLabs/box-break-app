@@ -912,18 +912,27 @@ export default function App() {
         </button>
         <button
           disabled={entries.length === 0}
-          onClick={async () => {
-            if (!confirm(`Clear ${entries.length} scan${entries.length !== 1 ? 's' : ''}? This will delete all stored scan images from the server.`)) return;
-            try { await fetch(PURGE_SCANS_URL, { method: 'DELETE' }) } catch (_) { /* best-effort */ }
+          onClick={() => {
+            if (!confirm(`Clear ${entries.length} scan${entries.length !== 1 ? 's' : ''} from this session? Stored images on the server are kept.`)) return;
             for (const e of entries) URL.revokeObjectURL(e.previewUrl);
             setEntries([]);
             entriesRef.current = [];
             queueRef.current = [];
           }}
           style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, color: entries.length === 0 ? 'var(--text-dim)' : 'var(--text)', padding: '6px 12px', fontSize: 12, cursor: entries.length === 0 ? 'not-allowed' : 'pointer' }}
-          title="Delete all stored scan images from the server and clear this session."
+          title="Clear this session. Stored scan images on the server are not deleted."
         >
-          Clear scans
+          Clear session
+        </button>
+        <button
+          onClick={async () => {
+            if (!confirm('Delete all stored scan images from the server? This cannot be undone.')) return;
+            try { await fetch(PURGE_SCANS_URL, { method: 'DELETE' }) } catch (_) { /* best-effort */ }
+          }}
+          style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-dim)', padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
+          title="Permanently delete all scan images stored on the server."
+        >
+          Delete server scans
         </button>
       </header>
 
