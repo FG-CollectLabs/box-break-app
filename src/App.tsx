@@ -870,15 +870,8 @@ export default function App() {
   useEffect(() => {
     if (!deckDisplayKey) { setDeckManifest(null); return }
     setManifestLoading(true)
-    fetch(`${EV_API}/v1/decks`)
-      .then(r => r.json())
-      .then(async (d: { decks: Array<{ key: string; product_display_key: string }> }) => {
-        const match = d.decks.find(dk => dk.product_display_key === deckDisplayKey)
-        if (!match) return null
-        const r2 = await fetch(`${EV_API}/v1/decks/${match.key}`)
-        if (!r2.ok) return null
-        return r2.json() as Promise<DeckManifest>
-      })
+    fetch(`${EV_API}/v1/decks/${encodeURIComponent(deckDisplayKey)}`)
+      .then(r => r.ok ? r.json() as Promise<DeckManifest> : null)
       .then(manifest => setDeckManifest(manifest))
       .catch(() => setDeckManifest(null))
       .finally(() => setManifestLoading(false))
