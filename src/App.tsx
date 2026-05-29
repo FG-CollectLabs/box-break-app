@@ -600,7 +600,7 @@ interface SealedProduct {
   display_key: string
 }
 
-type PickerGame = 'mtg' | 'pokemon'
+type PickerGame = 'mtg' | 'pokemon' | 'fab'
 type PickerCategory = 'set' | 'commander'
 
 function ToggleGroup({ options, active, onChange, activeColor }: { options: { value: string; label: string }[]; active: string; onChange: (v: string) => void; activeColor: string }) {
@@ -682,7 +682,7 @@ function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect:
 
   const handleGameSwitch = (g: PickerGame) => {
     setGame(g); setSearch('')
-    if (g === 'pokemon') setCategory('set')
+    if (g !== 'mtg') setCategory('set')
     if (selectedCode) clearSelection(g)
   }
 
@@ -770,7 +770,7 @@ function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect:
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <ToggleGroup options={[{ value: 'mtg', label: 'MTG' }, { value: 'pokemon', label: 'Pokémon' }]} active={game} onChange={v => handleGameSwitch(v as PickerGame)} activeColor="var(--primary)" />
+      <ToggleGroup options={[{ value: 'mtg', label: 'MTG' }, { value: 'pokemon', label: 'Pokémon' }, { value: 'fab', label: 'FaB' }]} active={game} onChange={v => handleGameSwitch(v as PickerGame)} activeColor="var(--primary)" />
       {game === 'mtg' && (
         <ToggleGroup options={[{ value: 'set', label: 'Set' }, { value: 'commander', label: 'Commander' }]} active={category} onChange={v => handleCategorySwitch(v as PickerCategory)} activeColor="var(--purple)" />
       )}
@@ -786,6 +786,99 @@ function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect:
       </button>
       {open && createPortal(dropdown, document.body)}
     </div>
+  )
+}
+
+// ─── Set Manifest (all singles in a booster set) ─────────────────────────────
+
+interface CatalogCard {
+  tcgplayer_product_id: number
+  name: string
+  set_name: string
+  image_url?: string
+  rarity?: string
+}
+
+const FAB_RARITY_ORDER: Record<string, number> = { fabled: 0, legendary: 1, majestic: 2, rare: 3, equipment: 4, common: 5, token: 6 }
+
+function rarityOrder(r?: string): number {
+  return r ? (FAB_RARITY_ORDER[r.toLowerCase()] ?? 99) : 99
+}
+
+function rarityColor(r?: string): string {
+  switch (r?.toLowerCase()) {
+    case 'fabled':    return '#f59e0b'
+    case 'legendary': return '#a855f7'
+    case 'majestic':  return '#3b82f6'
+    case 'rare':      return '#22c55e'
+    case 'equipment': return '#f97316'
+    default:          return 'var(--text-dim)'
+  }
+}
+
+function SetManifest({ setName, scannedIds }: { setName: string; scannedIds: Set<number> }) {
+  const [cards, setCards] = useState<CatalogCard[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!setName) return
+    setLoading(true)
+    const params = new URLSearchParams({ set_name: setName, limit: '500' })
+    fetch(`${CATALOG_URL}?${params}`)
+      .then(r => r.ok ? r.json() : null)
+      .then((d: { results: CatalogCard[] } | null) => {
+        if (!d) return
+        const sorted = [...(d.results ?? [])].sort((a, b) => {
+          const ro = rarityOrder(a.rarity) - rarityOrder(b.rarity)
+          return ro !== 0 ? ro : a.name.localeCompare(b.name)
+        })
+        setCards(sorted)
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [setName])
+
+  const scanned = cards.filter(c => scannedIds.has(c.tcgplayer_product_id)).length
+
+  return (
+    <aside style={{ width: 220, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', background: 'var(--surface)' }}>
+      <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Set Cards</div>
+        <div style={{ fontSize: 11, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{setName}</div>
+        {loading ? (
+          <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>Loading…</div>
+        ) : (
+          <>
+            <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>{scanned} / {cards.length} pulled</div>
+            <div style={{ marginTop: 6, height: 4, background: 'var(--surface-2)', borderRadius: 2, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${cards.length > 0 ? (scanned / cards.length) * 100 : 0}%`, background: 'var(--primary)', borderRadius: 2, transition: 'width 0.3s' }} />
+            </div>
+          </>
+        )}
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {!loading && cards.length === 0 && (
+          <div style={{ padding: '16px 12px', fontSize: 11, color: 'var(--text-dim)', textAlign: 'center' }}>No card data yet — ingest this set first</div>
+        )}
+        {cards.map(card => {
+          const isScanned = scannedIds.has(card.tcgplayer_product_id)
+          const imgUrl = card.image_url || `https://tcgplayer-cdn.tcgplayer.com/product/${card.tcgplayer_product_id}_in_1000x1000.jpg`
+          return (
+            <div key={card.tcgplayer_product_id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderBottom: '1px solid var(--border)', opacity: isScanned ? 0.45 : 1, transition: 'opacity 0.2s' }}>
+              <img src={imgUrl} alt="" onError={e => { e.currentTarget.style.display = 'none' }} style={{ width: 30, height: 42, objectFit: 'cover', borderRadius: 3, flexShrink: 0, border: isScanned ? '1px solid var(--success)' : '1px solid var(--border)' }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: isScanned ? 'var(--success)' : 'var(--text)' }}>
+                  {isScanned ? '✓ ' : ''}{card.name}
+                </div>
+                {card.rarity && (
+                  <div style={{ fontSize: 9, color: rarityColor(card.rarity), fontWeight: 600 }}>{card.rarity}</div>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </aside>
   )
 }
 
@@ -1137,9 +1230,12 @@ export default function App() {
 
       {/* ── Body ── */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* Deck checklist (left, only when commander deck selected) */}
-        {(deckManifest || manifestLoading) && (
+        {/* Left panel: deck checklist for commander decks, set manifest for booster sets */}
+        {deckDisplayKey && (deckManifest || manifestLoading) && (
           <DeckChecklist manifest={deckManifest} scannedIds={scannedIds} loading={manifestLoading} />
+        )}
+        {!deckDisplayKey && setCode && setName && (
+          <SetManifest setName={setName} scannedIds={scannedIds} />
         )}
 
         {/* Center: review + acceptance flow */}
