@@ -39,6 +39,12 @@ interface ApiCandidate {
   set_name: string
 }
 
+interface CardPrice {
+  tcgplayer: number
+  manapool: number
+  ebay: number
+}
+
 interface BreakEntry {
   id: string
   file: File
@@ -57,6 +63,7 @@ interface BreakEntry {
   errorMsg?: string
   overrideName?: string
   accepted?: boolean
+  price?: CardPrice
 }
 
 interface BreakInstance {
@@ -82,13 +89,32 @@ interface ApiResponse {
   back_detected: boolean
   front_image: string
   candidates: ApiCandidate[]
+  price?: CardPrice
+}
+
+interface DeckComponent {
+  display_key: string
+  qty: number
+  name?: string
+  tcgplayer_product_id?: string
+  finish?: string
+}
+
+interface DeckManifest {
+  key: string
+  name: string
+  set_code: string
+  tcg_set_name?: string
+  components: DeckComponent[]
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const IDENTIFY_URL = 'https://ev-api.futuregadgetlabs.com/v1/scan/identify'
-const CATALOG_URL = 'https://ev-api.futuregadgetlabs.com/v1/scan/catalog'
-const PURGE_SCANS_URL = 'https://ev-api.futuregadgetlabs.com/v1/scan/scans'
+const EV_API = 'https://ev-api.futuregadgetlabs.com'
+const IDENTIFY_URL = `${EV_API}/v1/scan/identify`
+const CATALOG_URL = `${EV_API}/v1/scan/catalog`
+const PURGE_SCANS_URL = `${EV_API}/v1/scan/scans`
+const INVENTORY_API = 'https://inventory-api.futuregadgetlabs.com'
 const MAX_CONCURRENT = 3
 const BACK_WAIT_TIMEOUT = 3000
 const BACK_WAIT_POLL = 500
@@ -172,14 +198,37 @@ function buildCSV(entries: BreakEntry[]): string {
   return rows.join('\n')
 }
 
-function downloadCSV(csv: string) {
+function buildTCGPlayerCSV(entries: BreakEntry[]): string {
+  const cards = groupEntries(entries)
+  const rows: string[] = ['Quantity,Product Name,Set Name,Number,TCGplayer Id,Condition,Printing']
+  const q = (s: string) => `"${s.replace(/"/g, '""')}"`
+  for (const card of cards) {
+    const isFoil = card.cardName?.toLowerCase().includes('foil') || card.instances[0]?.front.price !== undefined
+    rows.push([
+      card.instances.length.toString(),
+      q(card.cardName),
+      q(card.setName ?? ''),
+      q(card.cardNumber ?? ''),
+      card.tcgplayerId?.toString() ?? '',
+      q('Near Mint'),
+      q(isFoil ? 'Foil' : 'Normal'),
+    ].join(','))
+  }
+  return rows.join('\n')
+}
+
+function downloadCSV(csv: string, filename?: string) {
   const blob = new Blob([csv], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `break-export-${Date.now()}.csv`
+  a.download = filename ?? `break-export-${Date.now()}.csv`
   a.click()
   URL.revokeObjectURL(url)
+}
+
+function fmtPrice(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`
 }
 
 // ─── Status chip ─────────────────────────────────────────────────────────────
@@ -483,6 +532,13 @@ function ReviewCard({
                 <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.2 }}>{entry.overrideName ?? entry.cardName ?? 'Unknown'}</div>
                 <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>{entry.setName}</div>
                 {entry.cardNumber && <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>#{entry.cardNumber}</div>}
+                {entry.price && (entry.price.tcgplayer > 0 || entry.price.manapool > 0 || entry.price.ebay > 0) && (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
+                    {entry.price.tcgplayer > 0 && <span style={{ fontSize: 10, background: 'rgba(99,102,241,0.15)', color: 'var(--primary)', borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>TCG {fmtPrice(entry.price.tcgplayer)}</span>}
+                    {entry.price.manapool > 0 && <span style={{ fontSize: 10, background: 'rgba(168,85,247,0.15)', color: 'var(--purple)', borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>MP {fmtPrice(entry.price.manapool)}</span>}
+                    {entry.price.ebay > 0 && <span style={{ fontSize: 10, background: 'rgba(34,197,94,0.15)', color: 'var(--success)', borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>eBay {fmtPrice(entry.price.ebay)}</span>}
+                  </div>
+                )}
                 <button
                   onClick={() => onAccept(entry.id)}
                   style={{ marginTop: 4, background: 'var(--success)', border: 'none', borderRadius: 6, color: '#fff', padding: '8px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
@@ -575,7 +631,7 @@ function DeckRow({ label, sublabel, imageUrl, onClick }: { label: string; sublab
   )
 }
 
-function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect: (code: string, setName: string, game: string, deckName?: string) => void }) {
+function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect: (code: string, setName: string, game: string, deckName?: string, deckDisplayKey?: string) => void }) {
   const [open, setOpen] = useState(false)
   const [game, setGame] = useState<PickerGame>('mtg')
   const [category, setCategory] = useState<PickerCategory>('set')
@@ -622,7 +678,7 @@ function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect:
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
 
-  const clearSelection = (g = game) => { setSelectedName(''); setSelectedDeck(''); onSelect('', '', g) }
+  const clearSelection = (g = game) => { setSelectedName(''); setSelectedDeck(''); onSelect('', '', g, undefined, undefined) }
 
   const handleGameSwitch = (g: PickerGame) => {
     setGame(g); setSearch('')
@@ -655,7 +711,7 @@ function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect:
   const handleSelectDeck = (s: MarketSet, deck: SealedProduct | null) => {
     setSelectedName(s.name); setSelectedDeck(deck?.name ?? ''); setSearch('')
     setOpen(false); setDropPos(null)
-    onSelect(s.code, s.name, s.game, deck?.name)
+    onSelect(s.code, s.name, s.game, deck?.name, deck?.display_key)
   }
 
   const filteredSets = sets.filter(s => { const q = search.toLowerCase(); return !q || s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q) })
@@ -733,6 +789,59 @@ function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect:
   )
 }
 
+// ─── Deck Checklist ───────────────────────────────────────────────────────────
+
+function DeckChecklist({ manifest, scannedIds, loading }: { manifest: DeckManifest | null; scannedIds: Set<number>; loading: boolean }) {
+  if (loading) {
+    return (
+      <aside style={{ width: 220, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', background: 'var(--surface)' }}>
+        <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Deck List</div>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 12 }}>Loading…</div>
+      </aside>
+    )
+  }
+  if (!manifest) return null
+
+  const total = manifest.components.reduce((s, c) => s + c.qty, 0)
+  const scanned = manifest.components.filter(c => c.tcgplayer_product_id && scannedIds.has(parseInt(c.tcgplayer_product_id))).reduce((s, c) => s + c.qty, 0)
+
+  return (
+    <aside style={{ width: 220, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', background: 'var(--surface)' }}>
+      <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Deck List</div>
+        <div style={{ fontSize: 11, color: manifest.name ? 'var(--text)' : 'var(--text-dim)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{manifest.name}</div>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>{scanned} / {total} cards scanned</div>
+        <div style={{ marginTop: 6, height: 4, background: 'var(--surface-2)', borderRadius: 2, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${total > 0 ? (scanned / total) * 100 : 0}%`, background: 'var(--primary)', borderRadius: 2, transition: 'width 0.3s' }} />
+        </div>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {manifest.components.map((comp, i) => {
+          const tcgId = comp.tcgplayer_product_id ? parseInt(comp.tcgplayer_product_id) : null
+          const isScanned = tcgId != null && scannedIds.has(tcgId)
+          const imgUrl = tcgId ? `https://tcgplayer-cdn.tcgplayer.com/product/${tcgId}_in_1000x1000.jpg` : undefined
+          return (
+            <div key={`${comp.display_key}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderBottom: '1px solid var(--border)', opacity: isScanned ? 0.5 : 1, transition: 'opacity 0.2s' }}>
+              {imgUrl ? (
+                <img src={imgUrl} alt="" onError={e => { e.currentTarget.style.display = 'none' }} style={{ width: 30, height: 42, objectFit: 'cover', borderRadius: 3, flexShrink: 0, border: isScanned ? '1px solid var(--success)' : '1px solid var(--border)' }} />
+              ) : (
+                <div style={{ width: 30, height: 42, flexShrink: 0, background: 'var(--surface-2)', borderRadius: 3, border: '1px solid var(--border)' }} />
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: isScanned ? 'var(--success)' : 'var(--text)' }}>
+                  {isScanned ? '✓ ' : ''}{comp.name ?? comp.display_key}
+                </div>
+                {comp.qty > 1 && <div style={{ fontSize: 9, color: 'var(--text-dim)' }}>×{comp.qty}</div>}
+                {comp.finish && comp.finish !== 'normal' && <div style={{ fontSize: 9, color: 'var(--purple)' }}>{comp.finish}</div>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </aside>
+  )
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -740,6 +849,9 @@ export default function App() {
   const [setCode, setSetCode] = useState('')
   const [setName, setSetName] = useState('')
   const [deckName, setDeckName] = useState('')
+  const [deckDisplayKey, setDeckDisplayKey] = useState('')
+  const [deckManifest, setDeckManifest] = useState<DeckManifest | null>(null)
+  const [manifestLoading, setManifestLoading] = useState(false)
   const [imgScale, setImgScale] = useState<2 | 4>(2)
   const [altBackMode, setAltBackMode] = useState(true)
   const altBackModeRef = useRef(false)
@@ -754,6 +866,23 @@ export default function App() {
   useEffect(() => { setCodeRef.current = setCode }, [setCode])
   useEffect(() => { setNameRef.current = setName }, [setName])
   useEffect(() => { altBackModeRef.current = altBackMode }, [altBackMode])
+
+  useEffect(() => {
+    if (!deckDisplayKey) { setDeckManifest(null); return }
+    setManifestLoading(true)
+    fetch(`${EV_API}/v1/decks`)
+      .then(r => r.json())
+      .then(async (d: { decks: Array<{ key: string; product_display_key: string }> }) => {
+        const match = d.decks.find(dk => dk.product_display_key === deckDisplayKey)
+        if (!match) return null
+        const r2 = await fetch(`${EV_API}/v1/decks/${match.key}`)
+        if (!r2.ok) return null
+        return r2.json() as Promise<DeckManifest>
+      })
+      .then(manifest => setDeckManifest(manifest))
+      .catch(() => setDeckManifest(null))
+      .finally(() => setManifestLoading(false))
+  }, [deckDisplayKey])
 
   const patchEntry = useCallback((id: string, patch: Partial<BreakEntry>) => {
     setEntries(prev => {
@@ -814,7 +943,7 @@ export default function App() {
             scanUrl: res.front_image, tcgplayerId: top?.tcgplayer_product_id,
             cardName, cardNumber: cardName ? extractCardNumber(cardName) : undefined,
             setName: top?.set_name, candidateImageUrl: top?.image_url,
-            allCandidates: res.candidates,
+            allCandidates: res.candidates, price: res.price,
           })
         }
       })
@@ -869,6 +998,44 @@ export default function App() {
 
   const frontCount = entries.filter(e => e.status === 'done').length
   const acceptedCount = entries.filter(e => e.accepted && e.status === 'done').length
+  const scannedIds = new Set(entries.filter(e => e.status === 'done' && e.tcgplayerId).map(e => e.tcgplayerId!))
+
+  const [inventoryPushing, setInventoryPushing] = useState(false)
+  const [inventoryToken, setInventoryToken] = useState('')
+  const [showInvPush, setShowInvPush] = useState(false)
+
+  async function pushToInventory() {
+    if (!inventoryToken) return
+    const cards = groupEntries(entries)
+    const items = cards.flatMap(card =>
+      card.instances.map(inst => ({
+        tcgplayer_product_id: card.tcgplayerId,
+        card_name: card.cardName,
+        set_name: card.setName,
+        card_number: card.cardNumber,
+        image_url: inst.front.candidateImageUrl ?? null,
+        back_image_url: inst.back?.scanUrl ?? null,
+        quantity: 1,
+        condition: 'NM',
+        source: deckName ? `Box Break — ${deckName}` : 'Box Break',
+      }))
+    )
+    setInventoryPushing(true)
+    try {
+      const res = await fetch(`${INVENTORY_API}/v1/acquisitions/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${inventoryToken}` },
+        body: JSON.stringify({ items }),
+      })
+      if (!res.ok) throw new Error(`${res.status}`)
+      alert(`Pushed ${items.length} items to inventory.`)
+      setShowInvPush(false)
+    } catch (e) {
+      alert(`Push failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setInventoryPushing(false)
+    }
+  }
 
   useEffect(() => { return () => { for (const e of entriesRef.current) URL.revokeObjectURL(e.previewUrl) } }, [])
 
@@ -879,7 +1046,10 @@ export default function App() {
         <h1 style={{ fontSize: 16, fontWeight: 700, color: 'var(--primary)', marginRight: 4, whiteSpace: 'nowrap' }}>Box Break Scanner</h1>
         <SetPicker
           selectedCode={setCode}
-          onSelect={(code, name, _game, deck) => { setSetCode(code); setSetName(name); setDeckName(deck ?? ''); setCodeRef.current = code; setNameRef.current = name }}
+          onSelect={(code, name, _game, deck, displayKey) => {
+            setSetCode(code); setSetName(name); setDeckName(deck ?? ''); setDeckDisplayKey(displayKey ?? '')
+            setCodeRef.current = code; setNameRef.current = name
+          }}
         />
         {setCode && (
           <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>
@@ -905,10 +1075,24 @@ export default function App() {
         <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>{acceptedCount} / {frontCount} accepted</span>
         <button
           disabled={frontCount === 0}
-          onClick={() => downloadCSV(buildCSV(entries))}
-          style={{ background: frontCount === 0 ? 'var(--surface-2)' : 'var(--primary)', border: 'none', borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : '#fff', padding: '6px 16px', fontSize: 13, fontWeight: 600, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
+          onClick={() => downloadCSV(buildCSV(entries), `break-${setCode || 'export'}-${Date.now()}.csv`)}
+          style={{ background: frontCount === 0 ? 'var(--surface-2)' : 'var(--primary)', border: 'none', borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : '#fff', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
         >
           Export CSV
+        </button>
+        <button
+          disabled={frontCount === 0}
+          onClick={() => downloadCSV(buildTCGPlayerCSV(entries), `tcgplayer-${setCode || 'export'}-${Date.now()}.csv`)}
+          style={{ background: frontCount === 0 ? 'var(--surface-2)' : 'rgba(99,102,241,0.2)', border: `1px solid ${frontCount === 0 ? 'var(--border)' : 'var(--primary)'}`, borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : 'var(--primary)', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
+        >
+          TCGPlayer CSV
+        </button>
+        <button
+          disabled={frontCount === 0}
+          onClick={() => setShowInvPush(p => !p)}
+          style={{ background: showInvPush ? 'rgba(168,85,247,0.2)' : 'var(--surface-2)', border: `1px solid ${showInvPush ? 'var(--purple)' : 'var(--border)'}`, borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : showInvPush ? 'var(--purple)' : 'var(--text-dim)', padding: '6px 14px', fontSize: 12, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
+        >
+          → Inventory
         </button>
         <button
           disabled={entries.length === 0}
@@ -936,9 +1120,36 @@ export default function App() {
         </button>
       </header>
 
+      {/* ── Inventory push panel ── */}
+      {showInvPush && (
+        <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)', background: 'rgba(168,85,247,0.08)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--purple)', whiteSpace: 'nowrap' }}>Push to Inventory</span>
+          <input
+            value={inventoryToken}
+            onChange={e => setInventoryToken(e.target.value)}
+            placeholder="Bearer token…"
+            type="password"
+            style={{ flex: 1, minWidth: 200, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '5px 10px', fontSize: 12, fontFamily: 'inherit' }}
+          />
+          <span style={{ fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{groupEntries(entries).reduce((s, c) => s + c.instances.length, 0)} items · stock images</span>
+          <button
+            onClick={pushToInventory}
+            disabled={inventoryPushing || !inventoryToken}
+            style={{ background: 'var(--purple)', border: 'none', borderRadius: 6, color: '#fff', padding: '6px 16px', fontSize: 12, fontWeight: 600, cursor: inventoryPushing || !inventoryToken ? 'not-allowed' : 'pointer', opacity: inventoryPushing || !inventoryToken ? 0.5 : 1 }}
+          >
+            {inventoryPushing ? 'Pushing…' : 'Push'}
+          </button>
+        </div>
+      )}
+
       {/* ── Body ── */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* Left: review + acceptance flow */}
+        {/* Deck checklist (left, only when commander deck selected) */}
+        {(deckManifest || manifestLoading) && (
+          <DeckChecklist manifest={deckManifest} scannedIds={scannedIds} loading={manifestLoading} />
+        )}
+
+        {/* Center: review + acceptance flow */}
         <main style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: 16 }}>
           {entries.length === 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)', gap: 8 }}>
