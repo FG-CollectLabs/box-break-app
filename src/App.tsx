@@ -794,16 +794,6 @@ interface MarketSet {
   image_url?: string
 }
 
-interface SealedProduct {
-  id: string
-  set_id: string | null
-  game: string
-  product_type: string
-  qualifier: string | null
-  name: string
-  image_url: string | null
-  display_key: string
-}
 
 // ─── Quick Export Panel (commander deck — no scanning needed) ─────────────────
 
@@ -1027,6 +1017,14 @@ function DeckRow({ label, sublabel, imageUrl, onClick }: { label: string; sublab
   )
 }
 
+interface EvDeck {
+  key: string
+  name: string
+  game: string
+  set_code: string
+  product_display_key: string
+}
+
 function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect: (code: string, setName: string, game: string, deckName?: string, deckDisplayKey?: string) => void }) {
   const [open, setOpen] = useState(false)
   const [game, setGame] = useState<PickerGame>('mtg')
@@ -1035,9 +1033,9 @@ function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect:
   const [sets, setSets] = useState<MarketSet[]>([])
   const [setsLoading, setSetsLoading] = useState(false)
   const [cmdStep, setCmdStep] = useState<'set' | 'deck'>('set')
-  const [cmdSet, setCmdSet] = useState<MarketSet | null>(null)
-  const [decks, setDecks] = useState<SealedProduct[]>([])
-  const [decksLoading, setDecksLoading] = useState(false)
+  const [cmdSetCode, setCmdSetCode] = useState('')
+  const [evDecks, setEvDecks] = useState<EvDeck[]>([])
+  const [evDecksLoading, setEvDecksLoading] = useState(false)
   const [selectedName, setSelectedName] = useState('')
   const [selectedDeck, setSelectedDeck] = useState('')
   const btnRef = useRef<HTMLButtonElement>(null)
@@ -1053,15 +1051,16 @@ function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect:
       .finally(() => setSetsLoading(false))
   }, [game])
 
+  // Commander mode: fetch deck catalog from EV API (source of truth for manifests)
   useEffect(() => {
-    if (!cmdSet) return
-    setDecksLoading(true)
-    fetch(`${MARKET_API}/v1/sets/${game}/${encodeURIComponent(cmdSet.code)}/sealed`)
+    if (category !== 'commander') return
+    setEvDecksLoading(true)
+    fetch(`${EV_API}/v1/decks`)
       .then(r => r.json())
-      .then((d: { sealed: SealedProduct[] }) => setDecks((d.sealed ?? []).filter(p => p.product_type === 'commander_deck')))
-      .catch(() => setDecks([]))
-      .finally(() => setDecksLoading(false))
-  }, [cmdSet, game])
+      .then((d: { decks: EvDeck[] }) => setEvDecks((d.decks ?? []).filter(dk => !dk.game || dk.game === game)))
+      .catch(() => setEvDecks([]))
+      .finally(() => setEvDecksLoading(false))
+  }, [category, game])
 
   useEffect(() => {
     if (!open) return
@@ -1083,7 +1082,7 @@ function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect:
   }
 
   const handleCategorySwitch = (cat: PickerCategory) => {
-    setCategory(cat); setSearch(''); setCmdStep('set'); setCmdSet(null); setDecks([])
+    setCategory(cat); setSearch(''); setCmdStep('set'); setCmdSetCode(''); setEvDecks([])
     if (selectedCode) clearSelection()
   }
 
@@ -1102,16 +1101,21 @@ function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect:
     onSelect(s.code, s.name, s.game)
   }
 
-  const handlePickCmdSet = (s: MarketSet) => { setCmdSet(s); setCmdStep('deck'); setSearch('') }
+  const handlePickCmdSetCode = (code: string) => { setCmdSetCode(code); setCmdStep('deck'); setSearch('') }
 
-  const handleSelectDeck = (s: MarketSet, deck: SealedProduct | null) => {
-    setSelectedName(s.name); setSelectedDeck(deck?.name ?? ''); setSearch('')
+  const handleSelectDeck = (setCode: string, deck: EvDeck) => {
+    const setDisplayName = sets.find(s => s.code === setCode)?.name ?? setCode.toUpperCase()
+    setSelectedName(setDisplayName); setSelectedDeck(deck.name); setSearch('')
     setOpen(false); setDropPos(null)
-    onSelect(s.code, s.name, s.game, deck?.name, deck?.display_key)
+    // Use EV API's internal key directly — no fallback needed
+    onSelect(setCode, setDisplayName, game, deck.name, deck.key)
   }
 
   const filteredSets = sets.filter(s => { const q = search.toLowerCase(); return !q || s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q) })
-  const filteredDecks = decks.filter(d => !search || d.name.toLowerCase().includes(search.toLowerCase()))
+  // Commander mode: unique set codes from EV deck catalog
+  const evSetCodes = [...new Set(evDecks.map(d => d.set_code))].sort()
+  const filteredEvSets = evSetCodes.filter(code => !search || code.includes(search.toLowerCase()) || (sets.find(s => s.code === code)?.name ?? '').toLowerCase().includes(search.toLowerCase()))
+  const filteredEvDecks = evDecks.filter(d => d.set_code === cmdSetCode && (!search || d.name.toLowerCase().includes(search.toLowerCase())))
 
   const dropdown = dropPos && (
     <div ref={dropRef} style={{ position: 'fixed', top: dropPos.top, left: dropPos.left, width: 380, maxHeight: 480, zIndex: 9999, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -1120,37 +1124,57 @@ function SetPicker({ selectedCode, onSelect }: { selectedCode: string; onSelect:
       </div>
       {category === 'commander' && cmdStep === 'deck' && (
         <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-          <button onClick={() => { setCmdStep('set'); setCmdSet(null); setDecks([]); setSearch('') }} style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>← All sets</button>
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2, fontWeight: 600 }}>{cmdSet?.name}</div>
+          <button onClick={() => { setCmdStep('set'); setCmdSetCode(''); setSearch('') }} style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>← All sets</button>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2, fontWeight: 600 }}>{sets.find(s => s.code === cmdSetCode)?.name ?? cmdSetCode.toUpperCase()}</div>
         </div>
       )}
       <div style={{ overflowY: 'auto', flex: 1 }}>
-        {category === 'commander' && cmdStep === 'deck' && cmdSet && (
-          decksLoading ? (
+        {/* Commander step 2: decks for selected set (from EV API) */}
+        {category === 'commander' && cmdStep === 'deck' && cmdSetCode && (
+          evDecksLoading ? (
             <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>Loading…</div>
+          ) : filteredEvDecks.length === 0 ? (
+            <div style={{ padding: '8px 16px', color: 'var(--text-dim)', fontSize: 12 }}>No decks found for {cmdSetCode.toUpperCase()}</div>
           ) : (
-            <>
-              <DeckRow label="All decks in set" sublabel={`Identify cards from any deck in ${cmdSet.code.toUpperCase()}`} onClick={() => handleSelectDeck(cmdSet, null)} />
-              {filteredDecks.length === 0 && <div style={{ padding: '8px 16px', color: 'var(--text-dim)', fontSize: 12 }}>No commander decks found for this set</div>}
-              {filteredDecks.map(d => <DeckRow key={d.id} label={d.name} sublabel={d.qualifier ?? undefined} imageUrl={d.image_url ?? undefined} onClick={() => handleSelectDeck(cmdSet, d)} />)}
-            </>
+            filteredEvDecks.map(d => <DeckRow key={d.key} label={d.name} sublabel={d.key} onClick={() => handleSelectDeck(cmdSetCode, d)} />)
           )
         )}
-        {(category === 'set' || (category === 'commander' && cmdStep === 'set')) && (
+        {/* Commander step 1: set codes from EV API deck catalog */}
+        {category === 'commander' && cmdStep === 'set' && (
+          evDecksLoading ? (
+            <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>Loading…</div>
+          ) : filteredEvSets.length === 0 ? (
+            <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>No commander decks in catalog</div>
+          ) : filteredEvSets.map(code => {
+            const setObj = sets.find(s => s.code === code)
+            const deckCount = evDecks.filter(d => d.set_code === code).length
+            return (
+              <div key={code} onClick={() => handlePickCmdSetCode(code)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', cursor: 'pointer', borderLeft: '2px solid transparent' }} onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+                {setObj?.image_url && <img src={setObj.image_url} alt="" style={{ width: 20, height: 20, objectFit: 'contain', flexShrink: 0, opacity: 0.8 }} />}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{setObj?.name ?? code.toUpperCase()}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{code.toUpperCase()} · {deckCount} deck{deckCount !== 1 ? 's' : ''}</div>
+                </div>
+                <span style={{ color: 'var(--text-dim)', fontSize: 12, flexShrink: 0 }}>›</span>
+              </div>
+            )
+          })
+        )}
+        {/* Regular set mode (market-tracker) */}
+        {category === 'set' && (
           setsLoading ? (
             <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>Loading…</div>
           ) : filteredSets.length === 0 ? (
             <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12, textAlign: 'center' }}>No sets found</div>
           ) : filteredSets.map(s => {
-            const isSelected = category === 'set' && s.code === selectedCode
+            const isSelected = s.code === selectedCode
             return (
-              <div key={s.id} onClick={() => category === 'set' ? handleSelectSet(s) : handlePickCmdSet(s)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', cursor: 'pointer', background: isSelected ? 'rgba(99,102,241,0.12)' : 'transparent', borderLeft: isSelected ? '2px solid var(--primary)' : '2px solid transparent' }} onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }} onMouseLeave={e => { e.currentTarget.style.background = isSelected ? 'rgba(99,102,241,0.12)' : 'transparent' }}>
+              <div key={s.id} onClick={() => handleSelectSet(s)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', cursor: 'pointer', background: isSelected ? 'rgba(99,102,241,0.12)' : 'transparent', borderLeft: isSelected ? '2px solid var(--primary)' : '2px solid transparent' }} onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }} onMouseLeave={e => { e.currentTarget.style.background = isSelected ? 'rgba(99,102,241,0.12)' : 'transparent' }}>
                 {s.image_url && <img src={s.image_url} alt="" style={{ width: 20, height: 20, objectFit: 'contain', flexShrink: 0, opacity: 0.8 }} />}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
                   <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{s.code.toUpperCase()}{s.card_count != null ? ` · ${s.card_count} cards` : ''}{s.release_date ? ` · ${s.release_date.slice(0, 7)}` : ''}</div>
                 </div>
-                {category === 'commander' && <span style={{ color: 'var(--text-dim)', fontSize: 12, flexShrink: 0 }}>›</span>}
               </div>
             )
           })
@@ -1348,7 +1372,6 @@ export default function App() {
 
   // Bins
   const [bins, setBins] = useState<Bin[]>([{ id: 'bin_1', name: 'Bin 1' }])
-  const [activeBinId, setActiveBinId] = useState('bin_1')
   const [renamingBinId, setRenamingBinId] = useState<string | null>(null)
 
   // EV-calc CSV
@@ -1463,7 +1486,7 @@ export default function App() {
   }, [patchEntry])
 
   function addFiles(files: File[], targetBinId?: string) {
-    const binId = targetBinId ?? activeBinId
+    const binId = targetBinId ?? bins[0]?.id ?? 'bin_1'
     const alt = altBackModeRef.current
     const newEntries: BreakEntry[] = files.map((file, i) => ({
       id: makeId(), file, previewUrl: URL.createObjectURL(file),
@@ -1510,7 +1533,6 @@ export default function App() {
     const id = `bin_${Date.now()}`
     const n = bins.length + 1
     setBins(b => [...b, { id, name: `Bin ${n}` }])
-    setActiveBinId(id)
     setRenamingBinId(id)
   }
 
@@ -1522,11 +1544,7 @@ export default function App() {
   function removeBin(id: string) {
     const hasEntries = entriesRef.current.some(e => e.binId === id)
     if (hasEntries && !confirm('This bin has scanned cards. Remove it anyway?')) return
-    setBins(prev => {
-      const next = prev.filter(b => b.id !== id)
-      if (activeBinId === id) setActiveBinId(next[0]?.id ?? '')
-      return next
-    })
+    setBins(prev => prev.filter(b => b.id !== id))
   }
 
   const frontCount = entries.filter(e => e.status === 'done').length
@@ -1719,107 +1737,91 @@ export default function App() {
         )}
 
         {/* Center: bin tabs + per-bin content */}
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {/* Bin tab bar */}
-          <div style={{ display: 'flex', alignItems: 'stretch', padding: '0 8px', borderBottom: '1px solid var(--border)', flexShrink: 0, overflowX: 'auto', background: 'var(--surface)' }}>
-            {bins.map(bin => {
-              const binEntries = entries.filter(e => e.binId === bin.id)
-              const doneCount = binEntries.filter(e => e.status === 'done').length
-              const isActive = bin.id === activeBinId
-              return (
-                <div key={bin.id} style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+        {/* Center: vertical bin panels — each bin IS a drop zone */}
+        <main style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Quick export for commander decks (shown above bins when no files dropped yet) */}
+          {deckDisplayKey && manifestLoading && entries.length === 0 && (
+            <div style={{ fontSize: 13, color: 'var(--text-dim)', textAlign: 'center', padding: 16 }}>Loading deck manifest…</div>
+          )}
+          {deckDisplayKey && deckManifest && entries.length === 0 && (
+            <QuickExportPanel
+              manifest={deckManifest}
+              settings={pricingSettings}
+              evCalcPrices={evCalcPrices}
+              onScanInstead={() => { /* dropping files into any bin dismisses this */ }}
+            />
+          )}
+
+          {/* Bin panels */}
+          {bins.map(bin => {
+            const binEntries = entries.filter(e => e.binId === bin.id)
+            const doneCount = binEntries.filter(e => e.status === 'done').length
+            return (
+              <div key={bin.id} style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--surface)', overflow: 'hidden' }}>
+                {/* Bin header — click name to rename */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 14px', background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
                   {renamingBinId === bin.id ? (
                     <input
                       autoFocus
                       defaultValue={bin.name}
                       onBlur={e => commitRename(bin.id, e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') commitRename(bin.id, e.currentTarget.value); if (e.key === 'Escape') setRenamingBinId(null) }}
-                      style={{ padding: '8px 6px', background: 'transparent', border: 'none', borderBottom: '2px solid var(--primary)', color: 'var(--text)', fontSize: 13, fontFamily: 'inherit', outline: 'none', width: 120, marginBottom: -2 }}
+                      style={{ flex: 1, background: 'var(--bg)', border: '1px solid var(--primary)', borderRadius: 4, color: 'var(--text)', padding: '3px 7px', fontSize: 13, fontWeight: 700, fontFamily: 'inherit', outline: 'none' }}
                     />
                   ) : (
                     <button
-                      onClick={() => setActiveBinId(bin.id)}
-                      onDoubleClick={() => setRenamingBinId(bin.id)}
-                      style={{ padding: '10px 12px', background: 'transparent', border: 'none', borderBottom: isActive ? '2px solid var(--primary)' : '2px solid transparent', color: isActive ? 'var(--primary)' : 'var(--text-dim)', fontWeight: isActive ? 700 : 400, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', marginBottom: -1 }}
-                      title="Double-click to rename"
+                      onClick={() => setRenamingBinId(bin.id)}
+                      title="Click to rename"
+                      style={{ flex: 1, textAlign: 'left', background: 'none', border: 'none', color: 'var(--text)', fontWeight: 700, fontSize: 13, cursor: 'text', fontFamily: 'inherit', padding: 0 }}
                     >
-                      {bin.name}
-                      {binEntries.length > 0 && (
-                        <span style={{ marginLeft: 5, fontSize: 10, opacity: 0.7 }}>{doneCount}/{binEntries.length}</span>
-                      )}
+                      {bin.name} <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 400 }}>✎</span>
                     </button>
                   )}
+                  {binEntries.length > 0 && (
+                    <span style={{ fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{doneCount}/{binEntries.length}</span>
+                  )}
                   {bins.length > 1 && (
-                    <button
-                      onClick={() => removeBin(bin.id)}
-                      style={{ background: 'none', border: 'none', color: 'var(--text-dim)', fontSize: 12, cursor: 'pointer', padding: '0 2px', opacity: 0.4, lineHeight: 1 }}
-                      title="Remove bin"
-                    >×</button>
+                    <button onClick={() => removeBin(bin.id)} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', fontSize: 16, cursor: 'pointer', padding: '0 2px', lineHeight: 1, opacity: 0.5 }} title="Remove bin">×</button>
                   )}
                 </div>
-              )
-            })}
-            <button
-              onClick={addBin}
-              style={{ padding: '10px 10px', background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: 18, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', lineHeight: 1 }}
-              title="Add bin"
-            >+</button>
-          </div>
+                {/* Drop zone */}
+                <div style={{ padding: '10px 12px', borderBottom: binEntries.length > 0 ? '1px solid var(--border)' : undefined }}>
+                  <DropZone onFiles={files => addFiles(files, bin.id)} />
+                </div>
+                {/* Review cards for this bin */}
+                {binEntries.length > 0 && (
+                  <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {binEntries.map(e => (
+                      <ReviewCard
+                        key={e.id}
+                        entry={e}
+                        allEntries={entries}
+                        filterSetName={setName || undefined}
+                        onAccept={handleAccept}
+                        onCorrect={handleCorrect}
+                        onOverride={handleOverride}
+                        imgScale={imgScale}
+                        pricingSettings={pricingSettings}
+                        game={gameRef.current}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
 
-          {/* Active bin content */}
-          <main style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: 16 }}>
-            {(() => {
-              const binEntries = entries.filter(e => e.binId === activeBinId)
-              const showQuickExport = deckDisplayKey && deckManifest && binEntries.length === 0
-              const showManifestLoading = deckDisplayKey && manifestLoading && binEntries.length === 0
-              return (
-                <>
-                  {showManifestLoading && (
-                    <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 16 }}>Loading deck manifest…</div>
-                  )}
-                  {showQuickExport ? (
-                    <QuickExportPanel
-                      manifest={deckManifest!}
-                      settings={pricingSettings}
-                      evCalcPrices={evCalcPrices}
-                      onScanInstead={() => { /* drop files into the bin to dismiss */ }}
-                    />
-                  ) : (
-                    <>
-                      {/* Per-bin drop zone */}
-                      <div style={{ marginBottom: 16 }}>
-                        <DropZone onFiles={files => addFiles(files, activeBinId)} />
-                      </div>
-                      {binEntries.length === 0 ? (
-                        <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 12, padding: '32px 0' }}>
-                          Drop card scans above to start identifying
-                        </div>
-                      ) : (
-                        binEntries.map(e => (
-                          <ReviewCard
-                            key={e.id}
-                            entry={e}
-                            allEntries={entries}
-                            filterSetName={setName || undefined}
-                            onAccept={handleAccept}
-                            onCorrect={handleCorrect}
-                            onOverride={handleOverride}
-                            imgScale={imgScale}
-                            pricingSettings={pricingSettings}
-                            game={gameRef.current}
-                          />
-                        ))
-                      )}
-                    </>
-                  )}
-                </>
-              )
-            })()}
-          </main>
-        </div>
+          {/* Add bin button */}
+          <button
+            onClick={addBin}
+            style={{ alignSelf: 'flex-start', background: 'var(--surface-2)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-dim)', padding: '8px 18px', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}
+          >
+            + Add Bin
+          </button>
+        </main>
 
-        {/* Right: EV-calc + session stats + active bin queue */}
-        <aside style={{ width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--border)', background: 'var(--surface)' }}>
+        {/* Right: EV-calc + all-entries queue */}
+        <aside style={{ width: 240, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--border)', background: 'var(--surface)' }}>
           {/* EV-calc CSV drop */}
           <div style={{ padding: 10, borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Pricing CSV</div>
@@ -1831,34 +1833,13 @@ export default function App() {
               <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4 }}>{evCalcPrices.size} cards priced</div>
             )}
           </div>
-
-          {/* Session stats: per-bin summary */}
-          {bins.length > 1 && (
-            <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>All Bins</div>
-              {bins.map(bin => {
-                const binEntries = entries.filter(e => e.binId === bin.id)
-                const done = binEntries.filter(e => e.status === 'done').length
-                return (
-                  <div key={bin.id} onClick={() => setActiveBinId(bin.id)} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0', cursor: 'pointer', color: bin.id === activeBinId ? 'var(--primary)' : 'var(--text-dim)' }}>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 160 }}>{bin.name}</span>
-                    <span>{done}/{binEntries.length}</span>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-
-          {/* Queue for active bin */}
+          {/* All-session queue */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '0 10px' }}>
-            {(() => {
-              const binEntries = entries.filter(e => e.binId === activeBinId)
-              return binEntries.length === 0 ? (
-                <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 12, padding: '24px 0' }}>No images in this bin</div>
-              ) : (
-                [...binEntries].reverse().map(e => <QueueItem key={e.id} entry={e} />)
-              )
-            })()}
+            {entries.length === 0 ? (
+              <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 12, padding: '24px 0' }}>No scans yet</div>
+            ) : (
+              [...entries].reverse().map(e => <QueueItem key={e.id} entry={e} />)
+            )}
           </div>
         </aside>
       </div>
