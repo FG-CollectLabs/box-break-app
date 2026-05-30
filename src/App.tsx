@@ -119,6 +119,7 @@ interface DeckComponent {
   qty: number
   name?: string
   tcgplayer_product_id?: string
+  tcgplayer_sku_id?: string
   finish?: string
 }
 
@@ -248,21 +249,33 @@ function buildCSV(entries: BreakEntry[]): string {
 
 // Quick-export: build TCGPlayer CSV directly from a deck manifest (no scanning needed).
 // Used for commander decks where the card list is fixed and known.
-function buildManifestTCGPlayerCSV(manifest: DeckManifest, settings: PricingSettings): string {
-  const rows: string[] = ['Quantity,Product Name,Set Name,Number,TCGplayer Id,Condition,Printing']
+function buildManifestTCGPlayerCSV(manifest: DeckManifest, settings: PricingSettings, evCalcPrices: Map<number, number> = new Map()): string {
+  // When SKU IDs are available they encode condition+printing, so we don't need those columns.
+  // We use SKU-based format when ALL components have a sku_id; otherwise fall back to product-id format.
+  const allHaveSKU = manifest.components.every(c => !!c.tcgplayer_sku_id)
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`
+
+  if (allHaveSKU) {
+    // TCGPlayer SKU-based mass entry: TCGplayer Id (SKU), Quantity, My Price
+    const rows: string[] = ['TCGplayer Id,Quantity,My Price']
+    for (const comp of manifest.components) {
+      const productId = comp.tcgplayer_product_id ? parseInt(comp.tcgplayer_product_id) : 0
+      const evCents = productId > 0 ? (evCalcPrices.get(productId) ?? 0) : 0
+      const price = evCents > 0 ? (evCents / 100).toFixed(2) : ''
+      rows.push([comp.tcgplayer_sku_id!, comp.qty.toString(), price].join(','))
+    }
+    return rows.join('\n')
+  }
+
+  // Fallback: product-id based format
+  const rows: string[] = ['Quantity,Product Name,Set Name,Number,TCGplayer Id,Condition,Printing,My Price']
   const tcgSetName = manifest.tcg_set_name ?? manifest.name
   for (const comp of manifest.components) {
     const printing = comp.finish === 'f' ? 'Foil' : 'Normal'
-    rows.push([
-      comp.qty.toString(),
-      q(comp.name ?? comp.display_key),
-      q(tcgSetName),
-      '',
-      comp.tcgplayer_product_id ?? '',
-      q(settings.condition),
-      q(printing),
-    ].join(','))
+    const productId = comp.tcgplayer_product_id ? parseInt(comp.tcgplayer_product_id) : 0
+    const evCents = productId > 0 ? (evCalcPrices.get(productId) ?? 0) : 0
+    const price = evCents > 0 ? (evCents / 100).toFixed(2) : ''
+    rows.push([comp.qty.toString(), q(comp.name ?? comp.display_key), q(tcgSetName), '', comp.tcgplayer_product_id ?? '', q(settings.condition), q(printing), price].join(','))
   }
   return rows.join('\n')
 }
@@ -794,9 +807,10 @@ interface SealedProduct {
 
 // ─── Quick Export Panel (commander deck — no scanning needed) ─────────────────
 
-function QuickExportPanel({ manifest, settings, onScanInstead }: {
+function QuickExportPanel({ manifest, settings, evCalcPrices, onScanInstead }: {
   manifest: DeckManifest
   settings: PricingSettings
+  evCalcPrices: Map<number, number>
   onScanInstead: () => void
 }) {
   const total = manifest.components.reduce((s, c) => s + c.qty, 0)
@@ -820,7 +834,7 @@ function QuickExportPanel({ manifest, settings, onScanInstead }: {
         <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Quick Export</div>
 
         <button
-          onClick={() => downloadCSV(buildManifestTCGPlayerCSV(manifest, settings), `tcgplayer-${manifest.key}-${Date.now()}.csv`)}
+          onClick={() => downloadCSV(buildManifestTCGPlayerCSV(manifest, settings, evCalcPrices), `tcgplayer-${manifest.key}-${Date.now()}.csv`)}
           style={{ background: 'var(--primary)', border: 'none', borderRadius: 8, color: '#fff', padding: '10px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 2 }}
         >
           <span>TCGPlayer CSV</span>
@@ -1767,6 +1781,7 @@ export default function App() {
                     <QuickExportPanel
                       manifest={deckManifest!}
                       settings={pricingSettings}
+                      evCalcPrices={evCalcPrices}
                       onScanInstead={() => { /* drop files into the bin to dismiss */ }}
                     />
                   ) : (
