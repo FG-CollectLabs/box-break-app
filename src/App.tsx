@@ -30,6 +30,20 @@ export class ErrorBoundary extends Component<
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+type PricePoint = 'tcgplayer_market' | 'ebay' | 'manapool'
+type Condition = 'Near Mint' | 'Lightly Played' | 'Moderately Played'
+
+interface PricingConfig {
+  pricePoint: PricePoint
+  markupPct: number
+}
+
+interface PricingSettings {
+  tcgplayer: PricingConfig  // MTG, Pokémon — primary marketplace is TCGPlayer
+  other: PricingConfig      // FaB, etc. — prefer eBay sold data
+  condition: Condition
+}
+
 interface ApiCandidate {
   tcgplayer_product_id: number
   image_url: string
@@ -109,6 +123,40 @@ interface DeckManifest {
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
+
+// ─── Pricing helpers ─────────────────────────────────────────────────────────
+
+const DEFAULT_PRICING_SETTINGS: PricingSettings = {
+  tcgplayer: { pricePoint: 'tcgplayer_market', markupPct: 0 },
+  other:      { pricePoint: 'ebay',            markupPct: 0 },
+  condition:  'Near Mint',
+}
+
+function loadPricingSettings(): PricingSettings {
+  try {
+    const raw = localStorage.getItem('boxBreakPricingSettings')
+    if (raw) return { ...DEFAULT_PRICING_SETTINGS, ...JSON.parse(raw) }
+  } catch { /* ignore */ }
+  return DEFAULT_PRICING_SETTINGS
+}
+
+function savePricingSettings(s: PricingSettings) {
+  localStorage.setItem('boxBreakPricingSettings', JSON.stringify(s))
+}
+
+// Picks the base price from a CardPrice according to settings, returns 0 if unavailable.
+function computeListPrice(price: CardPrice | undefined, game: string, settings: PricingSettings): number {
+  if (!price) return 0
+  const cfg = (game === 'fab') ? settings.other : settings.tcgplayer
+  let base = 0
+  switch (cfg.pricePoint) {
+    case 'tcgplayer_market': base = price.tcgplayer || price.ebay || price.manapool; break
+    case 'ebay':             base = price.ebay || price.tcgplayer || price.manapool; break
+    case 'manapool':         base = price.manapool || price.tcgplayer || price.ebay; break
+  }
+  if (base <= 0) return 0
+  return Math.round(base * (1 + cfg.markupPct / 100))
+}
 
 const EV_API = 'https://ev-api.futuregadgetlabs.com'
 const IDENTIFY_URL = `${EV_API}/v1/scan/identify`
@@ -190,20 +238,24 @@ function buildCSV(entries: BreakEntry[]): string {
   return rows.join('\n')
 }
 
-function buildTCGPlayerCSV(entries: BreakEntry[]): string {
+function buildTCGPlayerCSV(entries: BreakEntry[], settings: PricingSettings, game: string): string {
   const cards = groupEntries(entries)
-  const rows: string[] = ['Quantity,Product Name,Set Name,Number,TCGplayer Id,Condition,Printing']
+  const rows: string[] = ['Quantity,Product Name,Set Name,Number,TCGplayer Id,Condition,Printing,My Price']
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`
   for (const card of cards) {
-    const isFoil = card.cardName?.toLowerCase().includes('foil') || card.instances[0]?.front.price !== undefined
+    const isFoil = card.cardName?.toLowerCase().includes('foil')
+    const price = card.instances[0]?.front.price
+    const listCents = computeListPrice(price, game, settings)
+    const listPrice = listCents > 0 ? (listCents / 100).toFixed(2) : ''
     rows.push([
       card.instances.length.toString(),
       q(card.cardName),
       q(card.setName ?? ''),
       q(card.cardNumber ?? ''),
       card.tcgplayerId?.toString() ?? '',
-      q('Near Mint'),
+      q(settings.condition),
       q(isFoil ? 'Foil' : 'Normal'),
+      listPrice,
     ].join(','))
   }
   return rows.join('\n')
@@ -451,6 +503,8 @@ function ReviewCard({
   onCorrect,
   onOverride,
   imgScale = 2,
+  pricingSettings,
+  game,
 }: {
   entry: BreakEntry
   allEntries: BreakEntry[]
@@ -459,6 +513,8 @@ function ReviewCard({
   onCorrect: (id: string, candidate: ApiCandidate) => void
   onOverride: (id: string, name: string) => void
   imgScale?: 2 | 4
+  pricingSettings: PricingSettings
+  game: string
 }) {
   const [correcting, setCorrecting] = useState(false)
   const rw = 120 * imgScale, rh = Math.round(rw * 1.4)
@@ -525,10 +581,26 @@ function ReviewCard({
                 <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>{entry.setName}</div>
                 {entry.cardNumber && <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>#{entry.cardNumber}</div>}
                 {entry.price && (entry.price.tcgplayer > 0 || entry.price.manapool > 0 || entry.price.ebay > 0) && (
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
-                    {entry.price.tcgplayer > 0 && <span style={{ fontSize: 10, background: 'rgba(99,102,241,0.15)', color: 'var(--primary)', borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>TCG {fmtPrice(entry.price.tcgplayer)}</span>}
-                    {entry.price.manapool > 0 && <span style={{ fontSize: 10, background: 'rgba(168,85,247,0.15)', color: 'var(--purple)', borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>MP {fmtPrice(entry.price.manapool)}</span>}
-                    {entry.price.ebay > 0 && <span style={{ fontSize: 10, background: 'rgba(34,197,94,0.15)', color: 'var(--success)', borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>eBay {fmtPrice(entry.price.ebay)}</span>}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 2 }}>
+                    {/* Recommended list price based on active pricing config */}
+                    {(() => {
+                      const listCents = computeListPrice(entry.price, game, pricingSettings)
+                      const cfg = game === 'fab' ? pricingSettings.other : pricingSettings.tcgplayer
+                      const srcLabel = cfg.pricePoint === 'tcgplayer_market' ? 'TCG' : cfg.pricePoint === 'ebay' ? 'eBay' : 'MP'
+                      const markupLabel = cfg.markupPct !== 0 ? ` ${cfg.markupPct > 0 ? '+' : ''}${cfg.markupPct}%` : ''
+                      return listCents > 0 ? (
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                          <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--success)' }}>{fmtPrice(listCents)}</span>
+                          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>from {srcLabel}{markupLabel}</span>
+                        </div>
+                      ) : null
+                    })()}
+                    {/* Raw platform prices */}
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {entry.price.tcgplayer > 0 && <span style={{ fontSize: 10, background: 'rgba(99,102,241,0.15)', color: 'var(--primary)', borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>TCG {fmtPrice(entry.price.tcgplayer)}</span>}
+                      {entry.price.manapool > 0 && <span style={{ fontSize: 10, background: 'rgba(168,85,247,0.15)', color: 'var(--purple)', borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>MP {fmtPrice(entry.price.manapool)}</span>}
+                      {entry.price.ebay > 0 && <span style={{ fontSize: 10, background: 'rgba(34,197,94,0.15)', color: 'var(--success)', borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>eBay {fmtPrice(entry.price.ebay)}</span>}
+                    </div>
                   </div>
                 )}
                 <button
@@ -590,6 +662,103 @@ interface SealedProduct {
   name: string
   image_url: string | null
   display_key: string
+}
+
+// ─── Pricing Settings Modal ───────────────────────────────────────────────────
+
+function PricingSettingsModal({ settings, onSave, onClose }: {
+  settings: PricingSettings
+  onSave: (s: PricingSettings) => void
+  onClose: () => void
+}) {
+  const [draft, setDraft] = useState<PricingSettings>(settings)
+
+  const setTCG = (patch: Partial<PricingConfig>) =>
+    setDraft(d => ({ ...d, tcgplayer: { ...d.tcgplayer, ...patch } }))
+  const setOther = (patch: Partial<PricingConfig>) =>
+    setDraft(d => ({ ...d, other: { ...d.other, ...patch } }))
+
+  const labelStyle: React.CSSProperties = { fontSize: 11, color: 'var(--text-dim)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }
+  const sectionStyle: React.CSSProperties = { padding: '12px 14px', background: 'var(--surface-2)', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 10 }
+  const rowStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4 }
+  const selectStyle: React.CSSProperties = { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '5px 8px', fontSize: 12, fontFamily: 'inherit', width: '100%' }
+  const inputStyle: React.CSSProperties = { ...selectStyle, width: 80 }
+
+  return createPortal(
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, width: 380, maxWidth: '95vw', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>Pricing Settings</div>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: 18, cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>×</button>
+        </div>
+
+        {/* TCGPlayer implementation (MTG, Pokémon) */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--primary)' }}>TCGPlayer (MTG / Pokémon)</div>
+          <div style={sectionStyle}>
+            <div style={rowStyle}>
+              <div style={labelStyle}>Price source</div>
+              <select style={selectStyle} value={draft.tcgplayer.pricePoint} onChange={e => setTCG({ pricePoint: e.target.value as PricePoint })}>
+                <option value="tcgplayer_market">TCGPlayer Market Price</option>
+                <option value="ebay">eBay Sold</option>
+                <option value="manapool">Manapool</option>
+              </select>
+            </div>
+            <div style={rowStyle}>
+              <div style={labelStyle}>Markup %</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="number" min="-50" max="200" step="1" style={inputStyle} value={draft.tcgplayer.markupPct} onChange={e => setTCG({ markupPct: Number(e.target.value) })} />
+                <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>e.g. 10 = list 10% above source price</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Other implementation (FaB, etc.) */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--warning)' }}>Other (FaB / non-TCGPlayer)</div>
+          <div style={sectionStyle}>
+            <div style={rowStyle}>
+              <div style={labelStyle}>Price source</div>
+              <select style={selectStyle} value={draft.other.pricePoint} onChange={e => setOther({ pricePoint: e.target.value as PricePoint })}>
+                <option value="ebay">eBay Sold</option>
+                <option value="tcgplayer_market">TCGPlayer Market Price</option>
+                <option value="manapool">Manapool</option>
+              </select>
+            </div>
+            <div style={rowStyle}>
+              <div style={labelStyle}>Markup %</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="number" min="-50" max="200" step="1" style={inputStyle} value={draft.other.markupPct} onChange={e => setOther({ markupPct: Number(e.target.value) })} />
+                <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>e.g. -5 = list 5% below source price</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Condition */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 700 }}>Default Condition</div>
+          <div style={sectionStyle}>
+            <div style={rowStyle}>
+              <select style={selectStyle} value={draft.condition} onChange={e => setDraft(d => ({ ...d, condition: e.target.value as Condition }))}>
+                <option value="Near Mint">Near Mint</option>
+                <option value="Lightly Played">Lightly Played</option>
+                <option value="Moderately Played">Moderately Played</option>
+              </select>
+              <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>Used in TCGPlayer CSV export</div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '6px 16px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
+          <button onClick={() => { onSave(draft); onClose() }} style={{ background: 'var(--primary)', border: 'none', borderRadius: 6, color: '#fff', padding: '6px 16px', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Save</button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
 }
 
 type PickerGame = 'mtg' | 'pokemon' | 'fab'
@@ -939,6 +1108,8 @@ export default function App() {
   const [manifestLoading, setManifestLoading] = useState(false)
   const [imgScale, setImgScale] = useState<2 | 4>(2)
   const [altBackMode, setAltBackMode] = useState(true)
+  const [pricingSettings, setPricingSettings] = useState<PricingSettings>(loadPricingSettings)
+  const [showPricingModal, setShowPricingModal] = useState(false)
   const altBackModeRef = useRef(false)
 
   const entriesRef = useRef<BreakEntry[]>([])
@@ -1120,6 +1291,13 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+      {showPricingModal && (
+        <PricingSettingsModal
+          settings={pricingSettings}
+          onSave={s => { setPricingSettings(s); savePricingSettings(s) }}
+          onClose={() => setShowPricingModal(false)}
+        />
+      )}
       {/* ── Top bar ── */}
       <header style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', borderBottom: '1px solid var(--border)', background: 'var(--surface)', flexShrink: 0, flexWrap: 'wrap' }}>
         <h1 style={{ fontSize: 16, fontWeight: 700, color: 'var(--primary)', marginRight: 4, whiteSpace: 'nowrap' }}>Box Break Scanner</h1>
@@ -1161,7 +1339,7 @@ export default function App() {
         </button>
         <button
           disabled={frontCount === 0}
-          onClick={() => downloadCSV(buildTCGPlayerCSV(entries), `tcgplayer-${setCode || 'export'}-${Date.now()}.csv`)}
+          onClick={() => downloadCSV(buildTCGPlayerCSV(entries, pricingSettings, gameRef.current), `tcgplayer-${setCode || 'export'}-${Date.now()}.csv`)}
           style={{ background: frontCount === 0 ? 'var(--surface-2)' : 'rgba(99,102,241,0.2)', border: `1px solid ${frontCount === 0 ? 'var(--border)' : 'var(--primary)'}`, borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : 'var(--primary)', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
         >
           TCGPlayer CSV
@@ -1186,6 +1364,13 @@ export default function App() {
           title="Clear this session. Stored scan images on the server are not deleted."
         >
           Clear session
+        </button>
+        <button
+          onClick={() => setShowPricingModal(true)}
+          style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-dim)', padding: '6px 10px', fontSize: 13, cursor: 'pointer' }}
+          title="Pricing settings"
+        >
+          ⚙ Pricing
         </button>
         <button
           onClick={async () => {
@@ -1250,6 +1435,8 @@ export default function App() {
                 onCorrect={handleCorrect}
                 onOverride={handleOverride}
                 imgScale={imgScale}
+                pricingSettings={pricingSettings}
+                game={gameRef.current}
               />
             ))
           )}
