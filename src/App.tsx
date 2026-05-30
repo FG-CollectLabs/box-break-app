@@ -59,6 +59,13 @@ interface CardPrice {
   ebay: number
 }
 
+interface Bin {
+  id: string
+  name: string
+}
+
+type MTGProductType = 'play' | 'collector' | 'commander' | 'jumpstart'
+
 interface BreakEntry {
   id: string
   file: File
@@ -78,6 +85,7 @@ interface BreakEntry {
   overrideName?: string
   accepted?: boolean
   price?: CardPrice
+  binId?: string
 }
 
 interface BreakInstance {
@@ -259,14 +267,16 @@ function buildManifestTCGPlayerCSV(manifest: DeckManifest, settings: PricingSett
   return rows.join('\n')
 }
 
-function buildTCGPlayerCSV(entries: BreakEntry[], settings: PricingSettings, game: string): string {
+function buildTCGPlayerCSV(entries: BreakEntry[], settings: PricingSettings, game: string, evCalcPrices: Map<number, number> = new Map()): string {
   const cards = groupEntries(entries)
   const rows: string[] = ['Quantity,Product Name,Set Name,Number,TCGplayer Id,Condition,Printing,My Price']
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`
   for (const card of cards) {
     const isFoil = card.cardName?.toLowerCase().includes('foil')
     const price = card.instances[0]?.front.price
-    const listCents = computeListPrice(price, game, settings)
+    // EV-calc CSV price takes precedence over computed price
+    const evCents = card.tcgplayerId ? (evCalcPrices.get(card.tcgplayerId) ?? 0) : 0
+    const listCents = evCents > 0 ? evCents : computeListPrice(price, game, settings)
     const listPrice = listCents > 0 ? (listCents / 100).toFixed(2) : ''
     rows.push([
       card.instances.length.toString(),
@@ -278,6 +288,34 @@ function buildTCGPlayerCSV(entries: BreakEntry[], settings: PricingSettings, gam
       q(isFoil ? 'Foil' : 'Normal'),
       listPrice,
     ].join(','))
+  }
+  return rows.join('\n')
+}
+
+function buildInventoryCSV(entries: BreakEntry[], bins: Bin[], evCalcPrices: Map<number, number>, listingPlatform: string): string {
+  const rows: string[] = ['card_name,set_name,tcgplayer_id,quantity,bin,listing_price,listing_platform,front_scan_urls,stock_image_url']
+  const q = (s: string) => `"${s.replace(/"/g, '""')}"`
+  const binMap = new Map<string, string>(bins.map(b => [b.id, b.name]))
+  // Group by (tcgplayerId or cardName) + binId
+  const grouped = new Map<string, { cardName: string; setName: string; tcgplayerId?: number; scanUrls: string[]; stockUrl: string; binName: string; qty: number }>()
+  for (const e of entries) {
+    if (e.status !== 'done') continue
+    const displayName = e.overrideName ?? e.cardName ?? 'Unknown'
+    const cardKey = e.tcgplayerId ? e.tcgplayerId.toString() : displayName
+    const binId = e.binId ?? bins[0]?.id ?? 'default'
+    const key = `${cardKey}::${binId}`
+    if (!grouped.has(key)) {
+      grouped.set(key, { cardName: displayName, setName: e.setName ?? '', tcgplayerId: e.tcgplayerId, scanUrls: [], stockUrl: e.candidateImageUrl ?? '', binName: binMap.get(binId) ?? binId, qty: 0 })
+    }
+    const g = grouped.get(key)!
+    g.qty++
+    if (e.scanUrl) g.scanUrls.push(e.scanUrl)
+    if (!g.stockUrl && e.candidateImageUrl) g.stockUrl = e.candidateImageUrl
+  }
+  for (const g of grouped.values()) {
+    const evCents = g.tcgplayerId ? (evCalcPrices.get(g.tcgplayerId) ?? 0) : 0
+    const listingPrice = evCents > 0 ? (evCents / 100).toFixed(2) : ''
+    rows.push([q(g.cardName), q(g.setName), g.tcgplayerId?.toString() ?? '', g.qty.toString(), q(g.binName), listingPrice, q(listingPlatform), q(g.scanUrls.join('|')), q(g.stockUrl)].join(','))
   }
   return rows.join('\n')
 }
@@ -294,6 +332,75 @@ function downloadCSV(csv: string, filename?: string) {
 
 function fmtPrice(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
+}
+
+function parseCSVRow(line: string): string[] {
+  const cols: string[] = []
+  let cur = '', inQuote = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (ch === '"') {
+      if (inQuote && line[i + 1] === '"') { cur += '"'; i++ }
+      else inQuote = !inQuote
+    } else if (ch === ',' && !inQuote) {
+      cols.push(cur); cur = ''
+    } else {
+      cur += ch
+    }
+  }
+  cols.push(cur)
+  return cols
+}
+
+// Parses an EV-calc CSV with headers: TCGplayer Id, Card Name, Listing Price
+// Returns a map of productId → listing price in cents.
+function parseEvCalcCSV(text: string): Map<number, number> {
+  const prices = new Map<number, number>()
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  if (lines.length < 2) return prices
+  const header = parseCSVRow(lines[0]).map(h => h.toLowerCase())
+  const idCol = header.findIndex(h => h.includes('tcgplayer') && (h.includes('id') || h.includes('#')))
+  const priceCol = header.findIndex(h => h.includes('listing') || h.includes('price'))
+  if (idCol < 0 || priceCol < 0) return prices
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseCSVRow(lines[i])
+    const id = parseInt(cols[idCol] ?? '')
+    const price = parseFloat(cols[priceCol] ?? '')
+    if (!isNaN(id) && id > 0 && !isNaN(price) && price > 0) {
+      prices.set(id, Math.round(price * 100))
+    }
+  }
+  return prices
+}
+
+// ─── EV-calc CSV drop zone ────────────────────────────────────────────────────
+
+function EvCalcDropZone({ filename, onFile }: { filename: string; onFile: (name: string, prices: Map<number, number>) => void }) {
+  const [dragging, setDragging] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  async function handleFile(file: File) {
+    const text = await file.text()
+    onFile(file.name, parseEvCalcCSV(text))
+  }
+
+  return (
+    <div
+      onDragOver={e => { e.preventDefault(); setDragging(true) }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f?.name.endsWith('.csv')) handleFile(f) }}
+      onClick={() => inputRef.current?.click()}
+      title="Drop the EV-calc pricing CSV here"
+      style={{ border: `1px dashed ${dragging ? 'var(--warning)' : filename ? 'var(--success)' : 'var(--border)'}`, borderRadius: 6, padding: '8px 12px', cursor: 'pointer', background: dragging ? 'rgba(251,191,36,0.08)' : filename ? 'rgba(34,197,94,0.06)' : 'transparent', transition: 'all 0.15s' }}
+    >
+      {filename ? (
+        <div style={{ fontSize: 11, color: 'var(--success)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>✓ {filename}</div>
+      ) : (
+        <div style={{ fontSize: 11, color: 'var(--text-dim)', textAlign: 'center' }}>📄 Drop EV-calc CSV</div>
+      )}
+      <input ref={inputRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = '' }} />
+    </div>
+  )
 }
 
 // ─── Status chip ─────────────────────────────────────────────────────────────
@@ -1224,7 +1331,19 @@ export default function App() {
   const [altBackMode, setAltBackMode] = useState(true)
   const [pricingSettings, setPricingSettings] = useState<PricingSettings>(loadPricingSettings)
   const [showPricingModal, setShowPricingModal] = useState(false)
-  const [scanMode, setScanMode] = useState(false)
+
+  // Bins
+  const [bins, setBins] = useState<Bin[]>([{ id: 'bin_1', name: 'Bin 1' }])
+  const [activeBinId, setActiveBinId] = useState('bin_1')
+  const [renamingBinId, setRenamingBinId] = useState<string | null>(null)
+
+  // EV-calc CSV
+  const [evCalcPrices, setEvCalcPrices] = useState<Map<number, number>>(new Map())
+  const [evCalcFilename, setEvCalcFilename] = useState('')
+
+  // MTG product type (commander is inferred from deckDisplayKey being set)
+  const [mtgProductType, setMtgProductType] = useState<MTGProductType>('play')
+  const [game, setGame] = useState('mtg')
   const altBackModeRef = useRef(false)
 
   const entriesRef = useRef<BreakEntry[]>([])
@@ -1241,7 +1360,10 @@ export default function App() {
   useEffect(() => { deckDisplayKeyRef.current = deckDisplayKey }, [deckDisplayKey])
   useEffect(() => { altBackModeRef.current = altBackMode }, [altBackMode])
 
-  useEffect(() => { setScanMode(false) }, [deckDisplayKey])
+  useEffect(() => {
+    // When a commander deck is selected, auto-set product type
+    if (deckDisplayKey) setMtgProductType('commander')
+  }, [deckDisplayKey])
 
   useEffect(() => {
     if (!deckDisplayKey) { setDeckManifest(null); return }
@@ -1326,12 +1448,14 @@ export default function App() {
       .finally(() => { activeScans.current--; processNext() })
   }, [patchEntry])
 
-  function addFiles(files: File[]) {
+  function addFiles(files: File[], targetBinId?: string) {
+    const binId = targetBinId ?? activeBinId
     const alt = altBackModeRef.current
     const newEntries: BreakEntry[] = files.map((file, i) => ({
       id: makeId(), file, previewUrl: URL.createObjectURL(file),
       status: (alt && i % 2 === 1 ? 'back_detected' : 'queued') as BreakEntry['status'],
       confidence: alt && i % 2 === 1 ? 'back' as const : undefined,
+      binId,
     }))
     // Pre-pair backs in alt-back mode
     if (alt) {
@@ -1366,6 +1490,29 @@ export default function App() {
   function handleAccept(id: string) {
     const entry = entriesRef.current.find(e => e.id === id)
     patchEntry(id, { accepted: !entry?.accepted, needsReview: false })
+  }
+
+  function addBin() {
+    const id = `bin_${Date.now()}`
+    const n = bins.length + 1
+    setBins(b => [...b, { id, name: `Bin ${n}` }])
+    setActiveBinId(id)
+    setRenamingBinId(id)
+  }
+
+  function commitRename(id: string, name: string) {
+    setBins(b => b.map(bin => bin.id === id ? { ...bin, name: name.trim() || bin.name } : bin))
+    setRenamingBinId(null)
+  }
+
+  function removeBin(id: string) {
+    const hasEntries = entriesRef.current.some(e => e.binId === id)
+    if (hasEntries && !confirm('This bin has scanned cards. Remove it anyway?')) return
+    setBins(prev => {
+      const next = prev.filter(b => b.id !== id)
+      if (activeBinId === id) setActiveBinId(next[0]?.id ?? '')
+      return next
+    })
   }
 
   const frontCount = entries.filter(e => e.status === 'done').length
@@ -1425,11 +1572,23 @@ export default function App() {
         <h1 style={{ fontSize: 16, fontWeight: 700, color: 'var(--primary)', marginRight: 4, whiteSpace: 'nowrap' }}>Box Break Scanner</h1>
         <SetPicker
           selectedCode={setCode}
-          onSelect={(code, name, game, deck, displayKey) => {
+          onSelect={(code, name, g, deck, displayKey) => {
             setSetCode(code); setSetName(name); setDeckName(deck ?? ''); setDeckDisplayKey(displayKey ?? '')
-            setCodeRef.current = code; setNameRef.current = name; gameRef.current = game || 'mtg'
+            setCodeRef.current = code; setNameRef.current = name; gameRef.current = g || 'mtg'
+            setGame(g || 'mtg')
           }}
         />
+        {game === 'mtg' && !deckDisplayKey && (
+          <ToggleGroup
+            options={[{ value: 'play', label: 'Play' }, { value: 'collector', label: 'Collector' }, { value: 'jumpstart', label: 'Jumpstart' }]}
+            active={mtgProductType === 'commander' ? 'play' : mtgProductType}
+            onChange={v => setMtgProductType(v as MTGProductType)}
+            activeColor="var(--warning)"
+          />
+        )}
+        {deckDisplayKey && (
+          <span style={{ fontSize: 11, background: 'rgba(168,85,247,0.15)', color: 'var(--purple)', border: '1px solid rgba(168,85,247,0.3)', borderRadius: 4, padding: '3px 8px', fontWeight: 600, whiteSpace: 'nowrap' }}>Commander</span>
+        )}
         {setCode && (
           <span style={{ color: 'var(--text-dim)', fontSize: 12, whiteSpace: 'nowrap' }}>
             · restricted to {deckName ? `${deckName} (${setCode})` : setName || setCode}
@@ -1461,10 +1620,17 @@ export default function App() {
         </button>
         <button
           disabled={frontCount === 0}
-          onClick={() => downloadCSV(buildTCGPlayerCSV(entries, pricingSettings, gameRef.current), `tcgplayer-${setCode || 'export'}-${Date.now()}.csv`)}
+          onClick={() => downloadCSV(buildTCGPlayerCSV(entries, pricingSettings, gameRef.current, evCalcPrices), `tcgplayer-${setCode || 'export'}-${Date.now()}.csv`)}
           style={{ background: frontCount === 0 ? 'var(--surface-2)' : 'rgba(99,102,241,0.2)', border: `1px solid ${frontCount === 0 ? 'var(--border)' : 'var(--primary)'}`, borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : 'var(--primary)', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
         >
           TCGPlayer CSV
+        </button>
+        <button
+          disabled={frontCount === 0}
+          onClick={() => downloadCSV(buildInventoryCSV(entries, bins, evCalcPrices, 'tcgplayer'), `inventory-${setCode || 'export'}-${Date.now()}.csv`)}
+          style={{ background: frontCount === 0 ? 'var(--surface-2)' : 'rgba(34,197,94,0.15)', border: `1px solid ${frontCount === 0 ? 'var(--border)' : 'var(--success)'}`, borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : 'var(--success)', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
+        >
+          Inventory CSV
         </button>
         <button
           disabled={frontCount === 0}
@@ -1530,7 +1696,7 @@ export default function App() {
 
       {/* ── Body ── */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* Left panel: deck checklist for commander decks, set manifest for booster sets */}
+        {/* Left panel: deck checklist or set manifest */}
         {deckDisplayKey && (deckManifest || manifestLoading) && (
           <DeckChecklist manifest={deckManifest} scannedIds={scannedIds} loading={manifestLoading} />
         )}
@@ -1538,53 +1704,146 @@ export default function App() {
           <SetManifest setName={setName} scannedIds={scannedIds} />
         )}
 
-        {/* Center: quick export (commander decks) or review + acceptance flow */}
-        <main style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: 16 }}>
-          {deckDisplayKey && !scanMode && deckManifest ? (
-            <QuickExportPanel
-              manifest={deckManifest}
-              settings={pricingSettings}
-              onScanInstead={() => setScanMode(true)}
-            />
-          ) : deckDisplayKey && !scanMode && manifestLoading ? (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)', fontSize: 13 }}>Loading deck…</div>
-          ) : (
-            entries.length === 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)', gap: 8 }}>
-                <div style={{ fontSize: 48, opacity: 0.3 }}>🃏</div>
-                <div style={{ fontSize: 15 }}>Drop card scans to start reviewing</div>
-                <div style={{ fontSize: 12 }}>Accept or correct each identification, then export</div>
-              </div>
-            ) : (
-              entries.map(e => (
-                <ReviewCard
-                  key={e.id}
-                  entry={e}
-                  allEntries={entries}
-                  filterSetName={setName || undefined}
-                  onAccept={handleAccept}
-                  onCorrect={handleCorrect}
-                  onOverride={handleOverride}
-                  imgScale={imgScale}
-                  pricingSettings={pricingSettings}
-                  game={gameRef.current}
-                />
-              ))
-            )
-          )}
-        </main>
-
-        {/* Right: drop zone + compact queue */}
-        <aside style={{ width: 280, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--border)', background: 'var(--surface)' }}>
-          <div style={{ padding: 12, borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-            <DropZone onFiles={addFiles} />
+        {/* Center: bin tabs + per-bin content */}
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {/* Bin tab bar */}
+          <div style={{ display: 'flex', alignItems: 'stretch', padding: '0 8px', borderBottom: '1px solid var(--border)', flexShrink: 0, overflowX: 'auto', background: 'var(--surface)' }}>
+            {bins.map(bin => {
+              const binEntries = entries.filter(e => e.binId === bin.id)
+              const doneCount = binEntries.filter(e => e.status === 'done').length
+              const isActive = bin.id === activeBinId
+              return (
+                <div key={bin.id} style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                  {renamingBinId === bin.id ? (
+                    <input
+                      autoFocus
+                      defaultValue={bin.name}
+                      onBlur={e => commitRename(bin.id, e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') commitRename(bin.id, e.currentTarget.value); if (e.key === 'Escape') setRenamingBinId(null) }}
+                      style={{ padding: '8px 6px', background: 'transparent', border: 'none', borderBottom: '2px solid var(--primary)', color: 'var(--text)', fontSize: 13, fontFamily: 'inherit', outline: 'none', width: 120, marginBottom: -2 }}
+                    />
+                  ) : (
+                    <button
+                      onClick={() => setActiveBinId(bin.id)}
+                      onDoubleClick={() => setRenamingBinId(bin.id)}
+                      style={{ padding: '10px 12px', background: 'transparent', border: 'none', borderBottom: isActive ? '2px solid var(--primary)' : '2px solid transparent', color: isActive ? 'var(--primary)' : 'var(--text-dim)', fontWeight: isActive ? 700 : 400, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', marginBottom: -1 }}
+                      title="Double-click to rename"
+                    >
+                      {bin.name}
+                      {binEntries.length > 0 && (
+                        <span style={{ marginLeft: 5, fontSize: 10, opacity: 0.7 }}>{doneCount}/{binEntries.length}</span>
+                      )}
+                    </button>
+                  )}
+                  {bins.length > 1 && (
+                    <button
+                      onClick={() => removeBin(bin.id)}
+                      style={{ background: 'none', border: 'none', color: 'var(--text-dim)', fontSize: 12, cursor: 'pointer', padding: '0 2px', opacity: 0.4, lineHeight: 1 }}
+                      title="Remove bin"
+                    >×</button>
+                  )}
+                </div>
+              )
+            })}
+            <button
+              onClick={addBin}
+              style={{ padding: '10px 10px', background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: 18, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', lineHeight: 1 }}
+              title="Add bin"
+            >+</button>
           </div>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '0 10px' }}>
-            {entries.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 12, padding: '24px 0' }}>No images yet</div>
-            ) : (
-              [...entries].reverse().map(e => <QueueItem key={e.id} entry={e} />)
+
+          {/* Active bin content */}
+          <main style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: 16 }}>
+            {(() => {
+              const binEntries = entries.filter(e => e.binId === activeBinId)
+              const showQuickExport = deckDisplayKey && deckManifest && binEntries.length === 0
+              const showManifestLoading = deckDisplayKey && manifestLoading && binEntries.length === 0
+              return (
+                <>
+                  {showManifestLoading && (
+                    <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 16 }}>Loading deck manifest…</div>
+                  )}
+                  {showQuickExport ? (
+                    <QuickExportPanel
+                      manifest={deckManifest!}
+                      settings={pricingSettings}
+                      onScanInstead={() => { /* drop files into the bin to dismiss */ }}
+                    />
+                  ) : (
+                    <>
+                      {/* Per-bin drop zone */}
+                      <div style={{ marginBottom: 16 }}>
+                        <DropZone onFiles={files => addFiles(files, activeBinId)} />
+                      </div>
+                      {binEntries.length === 0 ? (
+                        <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 12, padding: '32px 0' }}>
+                          Drop card scans above to start identifying
+                        </div>
+                      ) : (
+                        binEntries.map(e => (
+                          <ReviewCard
+                            key={e.id}
+                            entry={e}
+                            allEntries={entries}
+                            filterSetName={setName || undefined}
+                            onAccept={handleAccept}
+                            onCorrect={handleCorrect}
+                            onOverride={handleOverride}
+                            imgScale={imgScale}
+                            pricingSettings={pricingSettings}
+                            game={gameRef.current}
+                          />
+                        ))
+                      )}
+                    </>
+                  )}
+                </>
+              )
+            })()}
+          </main>
+        </div>
+
+        {/* Right: EV-calc + session stats + active bin queue */}
+        <aside style={{ width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--border)', background: 'var(--surface)' }}>
+          {/* EV-calc CSV drop */}
+          <div style={{ padding: 10, borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Pricing CSV</div>
+            <EvCalcDropZone
+              filename={evCalcFilename}
+              onFile={(name, prices) => { setEvCalcFilename(name); setEvCalcPrices(prices) }}
+            />
+            {evCalcPrices.size > 0 && (
+              <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4 }}>{evCalcPrices.size} cards priced</div>
             )}
+          </div>
+
+          {/* Session stats: per-bin summary */}
+          {bins.length > 1 && (
+            <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>All Bins</div>
+              {bins.map(bin => {
+                const binEntries = entries.filter(e => e.binId === bin.id)
+                const done = binEntries.filter(e => e.status === 'done').length
+                return (
+                  <div key={bin.id} onClick={() => setActiveBinId(bin.id)} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0', cursor: 'pointer', color: bin.id === activeBinId ? 'var(--primary)' : 'var(--text-dim)' }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 160 }}>{bin.name}</span>
+                    <span>{done}/{binEntries.length}</span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Queue for active bin */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '0 10px' }}>
+            {(() => {
+              const binEntries = entries.filter(e => e.binId === activeBinId)
+              return binEntries.length === 0 ? (
+                <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 12, padding: '24px 0' }}>No images in this bin</div>
+              ) : (
+                [...binEntries].reverse().map(e => <QueueItem key={e.id} entry={e} />)
+              )
+            })()}
           </div>
         </aside>
       </div>
