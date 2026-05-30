@@ -130,32 +130,24 @@ function extractCardNumber(name: string): string | undefined {
   return m ? m[1] : undefined
 }
 
-async function callIdentifyApi(file: File, setCode: string): Promise<ApiResponse> {
-  async function post(restrict: string): Promise<ApiResponse> {
-    const fd = new FormData()
-    fd.append('image', file)
-    // restrict_set must be a form field — ev-api proxies the body but strips query params
-    if (restrict) fd.append('restrict_set', restrict)
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), 90_000)
-    try {
-      const res = await fetch(IDENTIFY_URL, { method: 'POST', body: fd, signal: ctrl.signal })
-      if (!res.ok) {
-        const text = await res.text().catch(() => res.statusText)
-        throw new Error(`API ${res.status}: ${text}`)
-      }
-      return (await res.json()) as ApiResponse
-    } finally {
-      clearTimeout(timer)
+async function callIdentifyApi(file: File, setCode: string, game: string): Promise<ApiResponse> {
+  const fd = new FormData()
+  fd.append('image', file)
+  // restrict_set and game must be form fields — ev-api proxies the body but strips query params
+  if (setCode.trim()) fd.append('restrict_set', setCode.trim())
+  if (game) fd.append('game', game)
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 90_000)
+  try {
+    const res = await fetch(IDENTIFY_URL, { method: 'POST', body: fd, signal: ctrl.signal })
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText)
+      throw new Error(`API ${res.status}: ${text}`)
     }
+    return (await res.json()) as ApiResponse
+  } finally {
+    clearTimeout(timer)
   }
-
-  const result = await post(setCode.trim())
-  // If the set restriction returned zero candidates (set not yet indexed), fall back to global search
-  if (setCode.trim() && !result.back_detected && (!result.candidates || result.candidates.length === 0)) {
-    return post('')
-  }
-  return result
 }
 
 function groupEntries(entries: BreakEntry[]): BreakCard[] {
@@ -952,6 +944,7 @@ export default function App() {
   const entriesRef = useRef<BreakEntry[]>([])
   const setCodeRef = useRef('')
   const setNameRef = useRef('')
+  const gameRef = useRef('mtg')
   const activeScans = useRef(0)
   const queueRef = useRef<string[]>([])
 
@@ -1009,7 +1002,7 @@ export default function App() {
     if (!file) { activeScans.current--; processNext(); return }
     const wasAltBack = entry?.status === 'back_detected'
     patchEntry(id, { status: 'identifying' })
-    callIdentifyApi(file, setNameRef.current)
+    callIdentifyApi(file, setNameRef.current, gameRef.current)
       .then(async (res: ApiResponse) => {
         if (wasAltBack) {
           // Alt-back mode: entry was pre-tagged as a card back — just store the scan URL,
@@ -1132,9 +1125,9 @@ export default function App() {
         <h1 style={{ fontSize: 16, fontWeight: 700, color: 'var(--primary)', marginRight: 4, whiteSpace: 'nowrap' }}>Box Break Scanner</h1>
         <SetPicker
           selectedCode={setCode}
-          onSelect={(code, name, _game, deck, displayKey) => {
+          onSelect={(code, name, game, deck, displayKey) => {
             setSetCode(code); setSetName(name); setDeckName(deck ?? ''); setDeckDisplayKey(displayKey ?? '')
-            setCodeRef.current = code; setNameRef.current = name
+            setCodeRef.current = code; setNameRef.current = name; gameRef.current = game || 'mtg'
           }}
         />
         {setCode && (
