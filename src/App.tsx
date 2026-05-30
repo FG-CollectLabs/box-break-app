@@ -238,6 +238,27 @@ function buildCSV(entries: BreakEntry[]): string {
   return rows.join('\n')
 }
 
+// Quick-export: build TCGPlayer CSV directly from a deck manifest (no scanning needed).
+// Used for commander decks where the card list is fixed and known.
+function buildManifestTCGPlayerCSV(manifest: DeckManifest, settings: PricingSettings): string {
+  const rows: string[] = ['Quantity,Product Name,Set Name,Number,TCGplayer Id,Condition,Printing']
+  const q = (s: string) => `"${s.replace(/"/g, '""')}"`
+  const tcgSetName = manifest.tcg_set_name ?? manifest.name
+  for (const comp of manifest.components) {
+    const printing = comp.finish === 'f' ? 'Foil' : 'Normal'
+    rows.push([
+      comp.qty.toString(),
+      q(comp.name ?? comp.display_key),
+      q(tcgSetName),
+      '',
+      comp.tcgplayer_product_id ?? '',
+      q(settings.condition),
+      q(printing),
+    ].join(','))
+  }
+  return rows.join('\n')
+}
+
 function buildTCGPlayerCSV(entries: BreakEntry[], settings: PricingSettings, game: string): string {
   const cards = groupEntries(entries)
   const rows: string[] = ['Quantity,Product Name,Set Name,Number,TCGplayer Id,Condition,Printing,My Price']
@@ -662,6 +683,99 @@ interface SealedProduct {
   name: string
   image_url: string | null
   display_key: string
+}
+
+// ─── Quick Export Panel (commander deck — no scanning needed) ─────────────────
+
+function QuickExportPanel({ manifest, settings, onScanInstead }: {
+  manifest: DeckManifest
+  settings: PricingSettings
+  onScanInstead: () => void
+}) {
+  const total = manifest.components.reduce((s, c) => s + c.qty, 0)
+  const foilCount = manifest.components.filter(c => c.finish === 'f').reduce((s, c) => s + c.qty, 0)
+
+  return (
+    <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 560 }}>
+      {/* Deck summary */}
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ fontWeight: 700, fontSize: 15 }}>{manifest.name}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>{manifest.tcg_set_name ?? manifest.name}</div>
+        <div style={{ display: 'flex', gap: 12, marginTop: 4, fontSize: 12 }}>
+          <span style={{ color: 'var(--text-dim)' }}>{total} cards total</span>
+          {foilCount > 0 && <span style={{ color: 'var(--purple)' }}>{foilCount} foil</span>}
+          <span style={{ color: 'var(--text-dim)' }}>{manifest.components.length} unique</span>
+        </div>
+      </div>
+
+      {/* Export options */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Quick Export</div>
+
+        <button
+          onClick={() => downloadCSV(buildManifestTCGPlayerCSV(manifest, settings), `tcgplayer-${manifest.key}-${Date.now()}.csv`)}
+          style={{ background: 'var(--primary)', border: 'none', borderRadius: 8, color: '#fff', padding: '10px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 2 }}
+        >
+          <span>TCGPlayer CSV</span>
+          <span style={{ fontSize: 10, fontWeight: 400, opacity: 0.8 }}>Mass entry — {total} lines · condition: {settings.condition}</span>
+        </button>
+
+        <button
+          onClick={() => {
+            const rows = ['Product Name,Quantity,Finish']
+            const q = (s: string) => `"${s.replace(/"/g, '""')}"`
+            for (const comp of manifest.components) {
+              rows.push([q(comp.name ?? comp.display_key), comp.qty.toString(), q(comp.finish === 'f' ? 'Foil' : 'Normal')].join(','))
+            }
+            downloadCSV(rows.join('\n'), `manapool-${manifest.key}-${Date.now()}.csv`)
+          }}
+          style={{ background: 'rgba(168,85,247,0.15)', border: '1px solid rgba(168,85,247,0.4)', borderRadius: 8, color: 'var(--purple)', padding: '10px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 2 }}
+        >
+          <span>Manapool CSV</span>
+          <span style={{ fontSize: 10, fontWeight: 400, opacity: 0.8 }}>Name + quantity + finish · {total} lines</span>
+        </button>
+      </div>
+
+      {/* Divider */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>or</span>
+        <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+      </div>
+
+      {/* Scan instead */}
+      <button
+        onClick={onScanInstead}
+        style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-dim)', padding: '10px 18px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}
+      >
+        Scan cards instead → review identifications, get prices per card
+      </button>
+
+      {/* Card list preview */}
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, maxHeight: 320, overflowY: 'auto' }}>
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          Card list ({manifest.components.length} unique)
+        </div>
+        {manifest.components.map((comp, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px', borderBottom: i < manifest.components.length - 1 ? '1px solid var(--border)' : undefined }}>
+            {comp.tcgplayer_product_id && (
+              <img
+                src={`https://tcgplayer-cdn.tcgplayer.com/product/${comp.tcgplayer_product_id}_in_1000x1000.jpg`}
+                alt=""
+                onError={e => { e.currentTarget.style.display = 'none' }}
+                style={{ width: 24, height: 34, objectFit: 'cover', borderRadius: 2, flexShrink: 0, border: '1px solid var(--border)' }}
+              />
+            )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ fontSize: 12 }}>{comp.name ?? comp.display_key}</span>
+              {comp.finish === 'f' && <span style={{ fontSize: 10, color: 'var(--purple)', marginLeft: 6 }}>foil</span>}
+            </div>
+            {comp.qty > 1 && <span style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>×{comp.qty}</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 // ─── Pricing Settings Modal ───────────────────────────────────────────────────
@@ -1110,19 +1224,24 @@ export default function App() {
   const [altBackMode, setAltBackMode] = useState(true)
   const [pricingSettings, setPricingSettings] = useState<PricingSettings>(loadPricingSettings)
   const [showPricingModal, setShowPricingModal] = useState(false)
+  const [scanMode, setScanMode] = useState(false)
   const altBackModeRef = useRef(false)
 
   const entriesRef = useRef<BreakEntry[]>([])
   const setCodeRef = useRef('')
   const setNameRef = useRef('')
   const gameRef = useRef('mtg')
+  const deckDisplayKeyRef = useRef('')
   const activeScans = useRef(0)
   const queueRef = useRef<string[]>([])
 
   useEffect(() => { entriesRef.current = entries }, [entries])
   useEffect(() => { setCodeRef.current = setCode }, [setCode])
   useEffect(() => { setNameRef.current = setName }, [setName])
+  useEffect(() => { deckDisplayKeyRef.current = deckDisplayKey }, [deckDisplayKey])
   useEffect(() => { altBackModeRef.current = altBackMode }, [altBackMode])
+
+  useEffect(() => { setScanMode(false) }, [deckDisplayKey])
 
   useEffect(() => {
     if (!deckDisplayKey) { setDeckManifest(null); return }
@@ -1173,7 +1292,10 @@ export default function App() {
     if (!file) { activeScans.current--; processNext(); return }
     const wasAltBack = entry?.status === 'back_detected'
     patchEntry(id, { status: 'identifying' })
-    callIdentifyApi(file, setNameRef.current, gameRef.current)
+    // Commander deck breaks span many sets — restricting by set_name would miss reprints.
+    // Only use restrict_set for booster/randomized set breaks.
+    const restrictSet = deckDisplayKeyRef.current ? '' : setNameRef.current
+    callIdentifyApi(file, restrictSet, gameRef.current)
       .then(async (res: ApiResponse) => {
         if (wasAltBack) {
           // Alt-back mode: entry was pre-tagged as a card back — just store the scan URL,
@@ -1416,29 +1538,39 @@ export default function App() {
           <SetManifest setName={setName} scannedIds={scannedIds} />
         )}
 
-        {/* Center: review + acceptance flow */}
+        {/* Center: quick export (commander decks) or review + acceptance flow */}
         <main style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: 16 }}>
-          {entries.length === 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)', gap: 8 }}>
-              <div style={{ fontSize: 48, opacity: 0.3 }}>🃏</div>
-              <div style={{ fontSize: 15 }}>Drop card scans to start reviewing</div>
-              <div style={{ fontSize: 12 }}>Accept or correct each identification, then export</div>
-            </div>
+          {deckDisplayKey && !scanMode && deckManifest ? (
+            <QuickExportPanel
+              manifest={deckManifest}
+              settings={pricingSettings}
+              onScanInstead={() => setScanMode(true)}
+            />
+          ) : deckDisplayKey && !scanMode && manifestLoading ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)', fontSize: 13 }}>Loading deck…</div>
           ) : (
-            entries.map(e => (
-              <ReviewCard
-                key={e.id}
-                entry={e}
-                allEntries={entries}
-                filterSetName={setName || undefined}
-                onAccept={handleAccept}
-                onCorrect={handleCorrect}
-                onOverride={handleOverride}
-                imgScale={imgScale}
-                pricingSettings={pricingSettings}
-                game={gameRef.current}
-              />
-            ))
+            entries.length === 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)', gap: 8 }}>
+                <div style={{ fontSize: 48, opacity: 0.3 }}>🃏</div>
+                <div style={{ fontSize: 15 }}>Drop card scans to start reviewing</div>
+                <div style={{ fontSize: 12 }}>Accept or correct each identification, then export</div>
+              </div>
+            ) : (
+              entries.map(e => (
+                <ReviewCard
+                  key={e.id}
+                  entry={e}
+                  allEntries={entries}
+                  filterSetName={setName || undefined}
+                  onAccept={handleAccept}
+                  onCorrect={handleCorrect}
+                  onOverride={handleOverride}
+                  imgScale={imgScale}
+                  pricingSettings={pricingSettings}
+                  game={gameRef.current}
+                />
+              ))
+            )
           )}
         </main>
 
