@@ -64,6 +64,20 @@ interface Bin {
   name: string
 }
 
+interface ManualBinEntry {
+  id: string
+  binId: string
+  displayKey: string
+  cardName: string
+  tcgplayerId?: number
+  tcgplayerSkuId?: string
+  finish: string        // 'f' | 'nf'
+  qty: number
+  imageUrl?: string
+  setName?: string
+  cardNumber?: string
+}
+
 type MTGProductType = 'play' | 'collector' | 'commander' | 'jumpstart'
 
 interface BreakEntry {
@@ -247,130 +261,140 @@ function buildCSV(entries: BreakEntry[]): string {
   return rows.join('\n')
 }
 
-// Quick-export: build TCGPlayer CSV directly from a deck manifest (no scanning needed).
-// Used for commander decks where the card list is fixed and known.
 const TCG_CSV_HEADER = 'TCGplayer Id,Product Line,Set Name,Product Name,Title,Number,Rarity,Condition,TCG Market Price,TCG Direct Low,TCG Low Price With Shipping,TCG Low Price,Total Quantity,Add to Quantity,TCG Marketplace Price,Photo URL'
+const MP_CSV_HEADER = 'product_type,product_id,name,set,number,rarity,language,finish,condition,price,market_low,market_price,market_price_foil,quantity'
 
 function tcgProductLine(game: string): string {
   const map: Record<string, string> = { mtg: 'Magic', pokemon: 'Pokémon', fab: 'Flesh and Blood', yugioh: 'Yu-Gi-Oh!', lorcana: 'Lorcana' }
   return map[game] ?? ''
 }
 
-function buildManifestTCGPlayerCSV(manifest: DeckManifest, _settings: PricingSettings, evCalcPrices: Map<number, number> = new Map()): string {
+function buildTCGPlayerCSV(
+  entries: BreakEntry[],
+  manualEntries: ManualBinEntry[],
+  settings: PricingSettings,
+  game: string,
+  evCalcPrices: Map<number, number> = new Map(),
+): string {
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`
-  const tcgSetName = manifest.tcg_set_name ?? manifest.name
+  const productLine = tcgProductLine(game)
   const rows: string[] = [TCG_CSV_HEADER]
 
-  for (const comp of manifest.components) {
-    // TCGplayer Id: prefer SKU ID (encodes condition+printing) over product ID
-    const tcgId = comp.tcgplayer_sku_id ?? comp.tcgplayer_product_id ?? ''
-    const productId = comp.tcgplayer_product_id ? parseInt(comp.tcgplayer_product_id) : 0
-    const evCents = productId > 0 ? (evCalcPrices.get(productId) ?? 0) : 0
-    const listPrice = evCents > 0 ? (evCents / 100).toFixed(2) : ''
-    const condition = comp.finish === 'f' ? 'Near Mint Foil' : 'Near Mint'
-    // display_key format: "mtg-tmc-1-f" → parts[2] = collector number
-    const parts = (comp.display_key ?? '').split('-')
-    const number = parts.length >= 4 ? parts[2] : ''
-    rows.push([
-      q(tcgId), q('Magic'), q(tcgSetName), q(comp.name ?? comp.display_key),
-      '', number, '', q(condition),
-      '', '', '', '',
-      comp.qty.toString(), '0', listPrice, '',
-    ].join(','))
+  // Tally: key → { tcgId, productLine, setName, name, number, condition, market, listCents, qty }
+  type Tally = { tcgId: string; set: string; name: string; number: string; condition: string; market: string; listCents: number; qty: number }
+  const tally = new Map<string, Tally>()
+
+  const addRow = (key: string, t: Tally) => {
+    if (tally.has(key)) { tally.get(key)!.qty += t.qty }
+    else { tally.set(key, t) }
+  }
+
+  // Scan-based entries
+  for (const card of groupEntries(entries)) {
+    const isFoil = card.cardName?.toLowerCase().includes('foil')
+    const condition = isFoil ? 'Near Mint Foil' : settings.condition
+    const price = card.instances[0]?.front.price
+    const evCents = card.tcgplayerId ? (evCalcPrices.get(card.tcgplayerId) ?? 0) : 0
+    const listCents = evCents > 0 ? evCents : computeListPrice(price, game, settings)
+    const market = price?.tcgplayer ? (price.tcgplayer / 100).toFixed(2) : ''
+    const key = card.tcgplayerId?.toString() ?? card.cardName
+    addRow(key, { tcgId: card.tcgplayerId?.toString() ?? '', set: card.setName ?? '', name: card.cardName, number: card.cardNumber ?? '', condition, market, listCents, qty: card.instances.length })
+  }
+
+  // Manual (drag-from-list) entries — aggregated by tcgplayerSkuId → productId → name
+  for (const me of manualEntries) {
+    const tcgId = me.tcgplayerSkuId ?? me.tcgplayerId?.toString() ?? ''
+    const evCents = me.tcgplayerId ? (evCalcPrices.get(me.tcgplayerId) ?? 0) : 0
+    const condition = me.finish === 'f' ? 'Near Mint Foil' : 'Near Mint'
+    const key = tcgId || me.cardName
+    addRow(key, { tcgId, set: me.setName ?? '', name: me.cardName, number: me.cardNumber ?? '', condition, market: '', listCents: evCents, qty: me.qty })
+  }
+
+  for (const t of tally.values()) {
+    const listPrice = t.listCents > 0 ? (t.listCents / 100).toFixed(2) : ''
+    rows.push([q(t.tcgId), q(productLine), q(t.set), q(t.name), '', q(t.number), '', q(t.condition), t.market, '', '', '', t.qty.toString(), '0', listPrice, ''].join(','))
   }
   return rows.join('\n')
 }
 
-// Manapool import CSV format (matches ev-calculator's buildManapoolCSV output).
-// product_id (Scryfall UUID) is optional — Manapool matches on name+set+number+finish without it.
-function buildManifestManapoolCSV(manifest: DeckManifest, evCalcPrices: Map<number, number> = new Map()): string {
-  const header = 'product_type,product_id,name,set,number,rarity,language,finish,condition,price,market_low,market_price,market_price_foil,quantity'
+function buildManapoolCSV(
+  entries: BreakEntry[],
+  manualEntries: ManualBinEntry[],
+  settings: PricingSettings,
+  game: string,
+  evCalcPrices: Map<number, number> = new Map(),
+  setCodeHint = '',
+): string {
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`
-  const setCode = (manifest.set_code ?? '').toUpperCase()
-  const rows: string[] = [header]
-  for (const comp of manifest.components) {
-    if (!comp.name) continue
-    // display_key format: "mtg-tmc-1-f" → parts[2] = collector number
-    const parts = (comp.display_key ?? '').split('-')
-    const number = parts.length >= 4 ? parts[2] : ''
-    const finish = comp.finish === 'f' ? 'F' : 'NF'
-    const productId = comp.tcgplayer_product_id ? parseInt(comp.tcgplayer_product_id) : 0
-    const evCents = productId > 0 ? (evCalcPrices.get(productId) ?? 0) : 0
-    const price = evCents > 0 ? (evCents / 100).toFixed(2) : ''
-    rows.push(['mtg_single', '', q(comp.name), setCode, number, '', 'EN', finish, 'NM', price, '', '', '', comp.qty.toString()].join(','))
-  }
-  return rows.join('\n')
-}
+  const rows: string[] = [MP_CSV_HEADER]
 
-function buildManapoolCSV(entries: BreakEntry[], settings: PricingSettings, game: string, evCalcPrices: Map<number, number> = new Map(), setCodeHint = ''): string {
-  const header = 'product_type,product_id,name,set,number,rarity,language,finish,condition,price,market_low,market_price,market_price_foil,quantity'
-  const q = (s: string) => `"${s.replace(/"/g, '""')}"`
-  const cards = groupEntries(entries)
-  const rows: string[] = [header]
-  for (const card of cards) {
+  type Tally = { name: string; set: string; number: string; finish: string; listCents: number; qty: number }
+  const tally = new Map<string, Tally>()
+
+  const addRow = (key: string, t: Tally) => {
+    if (tally.has(key)) { tally.get(key)!.qty += t.qty }
+    else { tally.set(key, t) }
+  }
+
+  for (const card of groupEntries(entries)) {
     const isFoil = card.cardName?.toLowerCase().includes('foil')
     const finish = isFoil ? 'F' : 'NF'
     const price = card.instances[0]?.front.price
     const evCents = card.tcgplayerId ? (evCalcPrices.get(card.tcgplayerId) ?? 0) : 0
     const listCents = evCents > 0 ? evCents : computeListPrice(price, game, settings)
-    const listPrice = listCents > 0 ? (listCents / 100).toFixed(2) : ''
-    const set = setCodeHint.toUpperCase() || ''
-    rows.push(['mtg_single', '', q(card.cardName), set, q(card.cardNumber ?? ''), '', 'EN', finish, 'NM', listPrice, '', '', '', card.instances.length.toString()].join(','))
+    const key = card.tcgplayerId?.toString() ?? card.cardName
+    addRow(key, { name: card.cardName, set: (setCodeHint || (card.setName ?? '')).toUpperCase(), number: card.cardNumber ?? '', finish, listCents, qty: card.instances.length })
+  }
+
+  for (const me of manualEntries) {
+    const finish = me.finish === 'f' ? 'F' : 'NF'
+    const evCents = me.tcgplayerId ? (evCalcPrices.get(me.tcgplayerId) ?? 0) : 0
+    const key = me.tcgplayerId?.toString() ?? me.cardName
+    addRow(key, { name: me.cardName, set: (me.setName ?? '').toUpperCase(), number: me.cardNumber ?? '', finish, listCents: evCents, qty: me.qty })
+  }
+
+  for (const t of tally.values()) {
+    const price = t.listCents > 0 ? (t.listCents / 100).toFixed(2) : ''
+    rows.push(['mtg_single', '', q(t.name), t.set, t.number, '', 'EN', t.finish, 'NM', price, '', '', '', t.qty.toString()].join(','))
   }
   return rows.join('\n')
 }
 
-function buildTCGPlayerCSV(entries: BreakEntry[], settings: PricingSettings, game: string, evCalcPrices: Map<number, number> = new Map()): string {
-  const cards = groupEntries(entries)
-  const q = (s: string) => `"${s.replace(/"/g, '""')}"`
-  const productLine = tcgProductLine(game)
-  const rows: string[] = [TCG_CSV_HEADER]
-  for (const card of cards) {
-    const isFoil = card.cardName?.toLowerCase().includes('foil')
-    const condition = isFoil ? 'Near Mint Foil' : settings.condition
-    const price = card.instances[0]?.front.price
-    const marketPrice = price?.tcgplayer ? (price.tcgplayer / 100).toFixed(2) : ''
-    const evCents = card.tcgplayerId ? (evCalcPrices.get(card.tcgplayerId) ?? 0) : 0
-    const listCents = evCents > 0 ? evCents : computeListPrice(price, game, settings)
-    const listPrice = listCents > 0 ? (listCents / 100).toFixed(2) : ''
-    rows.push([
-      q(card.tcgplayerId?.toString() ?? ''),
-      q(productLine),
-      q(card.setName ?? ''),
-      q(card.cardName),
-      '',
-      q(card.cardNumber ?? ''),
-      '',
-      q(condition),
-      marketPrice, '', '', '',
-      card.instances.length.toString(), '0',
-      listPrice,
-      '',
-    ].join(','))
-  }
-  return rows.join('\n')
-}
-
-function buildInventoryCSV(entries: BreakEntry[], bins: Bin[], evCalcPrices: Map<number, number>, listingPlatform: string): string {
+function buildInventoryCSV(
+  entries: BreakEntry[],
+  manualEntries: ManualBinEntry[],
+  bins: Bin[],
+  evCalcPrices: Map<number, number>,
+  listingPlatform: string,
+): string {
   const rows: string[] = ['card_name,set_name,tcgplayer_id,quantity,bin,listing_price,listing_platform,front_scan_urls,stock_image_url']
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`
   const binMap = new Map<string, string>(bins.map(b => [b.id, b.name]))
-  // Group by (tcgplayerId or cardName) + binId
-  const grouped = new Map<string, { cardName: string; setName: string; tcgplayerId?: number; scanUrls: string[]; stockUrl: string; binName: string; qty: number }>()
+
+  type Row = { cardName: string; setName: string; tcgplayerId?: number; scanUrls: string[]; stockUrl: string; binName: string; qty: number }
+  const grouped = new Map<string, Row>()
+
+  // Scan entries
   for (const e of entries) {
     if (e.status !== 'done') continue
     const displayName = e.overrideName ?? e.cardName ?? 'Unknown'
     const cardKey = e.tcgplayerId ? e.tcgplayerId.toString() : displayName
     const binId = e.binId ?? bins[0]?.id ?? 'default'
     const key = `${cardKey}::${binId}`
-    if (!grouped.has(key)) {
-      grouped.set(key, { cardName: displayName, setName: e.setName ?? '', tcgplayerId: e.tcgplayerId, scanUrls: [], stockUrl: e.candidateImageUrl ?? '', binName: binMap.get(binId) ?? binId, qty: 0 })
-    }
+    if (!grouped.has(key)) grouped.set(key, { cardName: displayName, setName: e.setName ?? '', tcgplayerId: e.tcgplayerId, scanUrls: [], stockUrl: e.candidateImageUrl ?? '', binName: binMap.get(binId) ?? binId, qty: 0 })
     const g = grouped.get(key)!
     g.qty++
     if (e.scanUrl) g.scanUrls.push(e.scanUrl)
     if (!g.stockUrl && e.candidateImageUrl) g.stockUrl = e.candidateImageUrl
   }
+
+  // Manual entries (one row per card per bin as-is, qty already stored on the entry)
+  for (const me of manualEntries) {
+    const key = `${me.displayKey}::${me.binId}`
+    if (!grouped.has(key)) grouped.set(key, { cardName: me.cardName, setName: me.setName ?? '', tcgplayerId: me.tcgplayerId, scanUrls: [], stockUrl: me.imageUrl ?? '', binName: binMap.get(me.binId) ?? me.binId, qty: 0 })
+    grouped.get(key)!.qty += me.qty
+  }
+
   for (const g of grouped.values()) {
     const evCents = g.tcgplayerId ? (evCalcPrices.get(g.tcgplayerId) ?? 0) : 0
     const listingPrice = evCents > 0 ? (evCents / 100).toFixed(2) : ''
@@ -841,90 +865,121 @@ interface MarketSet {
 }
 
 
-// ─── Quick Export Panel (commander deck — no scanning needed) ─────────────────
+// ─── Card List (left panel) ────────────────────────────────────────────────────
 
-function QuickExportPanel({ manifest, settings, evCalcPrices, onScanInstead }: {
-  manifest: DeckManifest
-  settings: PricingSettings
-  evCalcPrices: Map<number, number>
-  onScanInstead: () => void
+const BASIC_LAND_NAMES = new Set(['Plains', 'Island', 'Swamp', 'Mountain', 'Forest', 'Wastes', 'Snow-Covered Plains', 'Snow-Covered Island', 'Snow-Covered Swamp', 'Snow-Covered Mountain', 'Snow-Covered Forest'])
+
+function CardList({ manifest, scannedIds, manualEntries, loading, onDragCard }: {
+  manifest: DeckManifest | null
+  scannedIds: Set<number>
+  manualEntries: ManualBinEntry[]
+  loading: boolean
+  onDragCard: (comp: DeckComponent) => void
 }) {
+  const [search, setSearch] = useState('')
+  const [hideBasics, setHideBasics] = useState(false)
+  const [finishFilter, setFinishFilter] = useState<'all' | 'f' | 'nf'>('all')
+  const [sortBy, setSortBy] = useState<'name' | 'qty' | 'finish'>('name')
+
+  if (loading) return (
+    <aside style={{ width: 230, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', background: 'var(--surface)' }}>
+      <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Deck List</div>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 12 }}>Loading…</div>
+    </aside>
+  )
+  if (!manifest) return null
+
+  // Count how many of each card are already in bins (manual entries)
+  const inBins = new Map<string, number>()
+  for (const me of manualEntries) inBins.set(me.displayKey, (inBins.get(me.displayKey) ?? 0) + me.qty)
+
   const total = manifest.components.reduce((s, c) => s + c.qty, 0)
-  const foilCount = manifest.components.filter(c => c.finish === 'f').reduce((s, c) => s + c.qty, 0)
+  const assigned = [...inBins.values()].reduce((s, v) => s + v, 0)
+  const scanned = manifest.components.filter(c => c.tcgplayer_product_id && scannedIds.has(parseInt(c.tcgplayer_product_id))).reduce((s, c) => s + c.qty, 0)
+
+  let comps = manifest.components
+  if (search) { const q = search.toLowerCase(); comps = comps.filter(c => (c.name ?? c.display_key).toLowerCase().includes(q)) }
+  if (hideBasics) comps = comps.filter(c => !BASIC_LAND_NAMES.has(c.name ?? ''))
+  if (finishFilter !== 'all') comps = comps.filter(c => (c.finish ?? 'nf') === finishFilter)
+  comps = [...comps].sort((a, b) => {
+    if (sortBy === 'qty') return b.qty - a.qty
+    if (sortBy === 'finish') return (a.finish ?? 'nf').localeCompare(b.finish ?? 'nf') || (a.name ?? '').localeCompare(b.name ?? '')
+    return (a.name ?? a.display_key).localeCompare(b.name ?? b.display_key)
+  })
+
+  const chipStyle: React.CSSProperties = { fontSize: 10, padding: '2px 7px', borderRadius: 10, border: '1px solid var(--border)', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }
 
   return (
-    <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 560 }}>
-      {/* Deck summary */}
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <div style={{ fontWeight: 700, fontSize: 15 }}>{manifest.name}</div>
-        <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>{manifest.tcg_set_name ?? manifest.name}</div>
-        <div style={{ display: 'flex', gap: 12, marginTop: 4, fontSize: 12 }}>
-          <span style={{ color: 'var(--text-dim)' }}>{total} cards total</span>
-          {foilCount > 0 && <span style={{ color: 'var(--purple)' }}>{foilCount} foil</span>}
-          <span style={{ color: 'var(--text-dim)' }}>{manifest.components.length} unique</span>
+    <aside style={{ width: 230, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', background: 'var(--surface)' }}>
+      {/* Header */}
+      <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Deck List</div>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+          {assigned > 0 && <span style={{ color: 'var(--primary)' }}>{assigned} in bins · </span>}
+          {scanned > 0 && <span style={{ color: 'var(--success)' }}>{scanned} scanned · </span>}
+          {total} total
         </div>
-      </div>
-
-      {/* Export options */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Quick Export</div>
-
-        <button
-          onClick={() => downloadCSV(buildManifestTCGPlayerCSV(manifest, settings, evCalcPrices), `tcgplayer-${manifest.key}-${Date.now()}.csv`)}
-          style={{ background: 'var(--primary)', border: 'none', borderRadius: 8, color: '#fff', padding: '10px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 2 }}
-        >
-          <span>TCGPlayer CSV</span>
-          <span style={{ fontSize: 10, fontWeight: 400, opacity: 0.8 }}>Mass entry — {total} lines · condition: {settings.condition}</span>
-        </button>
-
-        <button
-          onClick={() => downloadCSV(buildManifestManapoolCSV(manifest, evCalcPrices), `manapool-${manifest.key}-${Date.now()}.csv`)}
-          style={{ background: 'rgba(168,85,247,0.15)', border: '1px solid rgba(168,85,247,0.4)', borderRadius: 8, color: 'var(--purple)', padding: '10px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 2 }}
-        >
-          <span>Manapool CSV</span>
-          <span style={{ fontSize: 10, fontWeight: 400, opacity: 0.8 }}>Manapool import format · {total} lines{evCalcPrices.size > 0 ? ' · prices loaded' : ''}</span>
-        </button>
-      </div>
-
-      {/* Divider */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>or</span>
-        <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-      </div>
-
-      {/* Scan instead */}
-      <button
-        onClick={onScanInstead}
-        style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-dim)', padding: '10px 18px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}
-      >
-        Scan cards instead → review identifications, get prices per card
-      </button>
-
-      {/* Card list preview */}
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, maxHeight: 320, overflowY: 'auto' }}>
-        <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Card list ({manifest.components.length} unique)
+        {/* Search */}
+        <input
+          value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Search…"
+          style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '4px 8px', fontSize: 11, fontFamily: 'inherit', width: '100%', boxSizing: 'border-box' }}
+        />
+        {/* Filter chips */}
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          <button onClick={() => setHideBasics(h => !h)} style={{ ...chipStyle, background: hideBasics ? 'rgba(99,102,241,0.2)' : 'var(--surface-2)', color: hideBasics ? 'var(--primary)' : 'var(--text-dim)', borderColor: hideBasics ? 'var(--primary)' : 'var(--border)' }}>−basics</button>
+          <button onClick={() => setFinishFilter(f => f === 'f' ? 'all' : 'f')} style={{ ...chipStyle, background: finishFilter === 'f' ? 'rgba(168,85,247,0.2)' : 'var(--surface-2)', color: finishFilter === 'f' ? 'var(--purple)' : 'var(--text-dim)', borderColor: finishFilter === 'f' ? 'var(--purple)' : 'var(--border)' }}>foil</button>
+          <button onClick={() => setFinishFilter(f => f === 'nf' ? 'all' : 'nf')} style={{ ...chipStyle, background: finishFilter === 'nf' ? 'rgba(168,85,247,0.2)' : 'var(--surface-2)', color: finishFilter === 'nf' ? 'var(--purple)' : 'var(--text-dim)', borderColor: finishFilter === 'nf' ? 'var(--purple)' : 'var(--border)' }}>non-foil</button>
         </div>
-        {manifest.components.map((comp, i) => (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px', borderBottom: i < manifest.components.length - 1 ? '1px solid var(--border)' : undefined }}>
-            {comp.tcgplayer_product_id && (
-              <img
-                src={`https://tcgplayer-cdn.tcgplayer.com/product/${comp.tcgplayer_product_id}_in_1000x1000.jpg`}
-                alt=""
-                onError={e => { e.currentTarget.style.display = 'none' }}
-                style={{ width: 24, height: 34, objectFit: 'cover', borderRadius: 2, flexShrink: 0, border: '1px solid var(--border)' }}
-              />
-            )}
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <span style={{ fontSize: 12 }}>{comp.name ?? comp.display_key}</span>
-              {comp.finish === 'f' && <span style={{ fontSize: 10, color: 'var(--purple)', marginLeft: 6 }}>foil</span>}
+        {/* Sort */}
+        <select value={sortBy} onChange={e => setSortBy(e.target.value as typeof sortBy)} style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '3px 6px', fontSize: 11, fontFamily: 'inherit' }}>
+          <option value="name">Sort: A→Z</option>
+          <option value="finish">Sort: finish</option>
+          <option value="qty">Sort: qty</option>
+        </select>
+      </div>
+
+      {/* Card rows — draggable */}
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', padding: '4px 10px', fontStyle: 'italic' }}>Drag cards into bins →</div>
+        {comps.map((comp, i) => {
+          const tcgId = comp.tcgplayer_product_id ? parseInt(comp.tcgplayer_product_id) : null
+          const isScanned = tcgId != null && scannedIds.has(tcgId)
+          const assignedQty = inBins.get(comp.display_key) ?? 0
+          const isAssigned = assignedQty > 0
+          const imgUrl = tcgId ? `https://tcgplayer-cdn.tcgplayer.com/product/${tcgId}_in_1000x1000.jpg` : undefined
+          return (
+            <div
+              key={`${comp.display_key}-${i}`}
+              draggable
+              onDragStart={e => {
+                e.dataTransfer.setData('application/x-deck-component', JSON.stringify(comp))
+                e.dataTransfer.effectAllowed = 'copy'
+                onDragCard(comp)
+              }}
+              style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 8px', borderBottom: '1px solid var(--border)', cursor: 'grab', opacity: (isScanned || isAssigned) ? 0.55 : 1, transition: 'opacity 0.2s', userSelect: 'none' }}
+              title={`Drag to a bin — ${comp.name ?? comp.display_key}`}
+            >
+              {imgUrl ? (
+                <img src={imgUrl} alt="" onError={e => { e.currentTarget.style.display = 'none' }} style={{ width: 28, height: 39, objectFit: 'cover', borderRadius: 2, flexShrink: 0, border: isScanned ? '1px solid var(--success)' : isAssigned ? '1px solid var(--primary)' : '1px solid var(--border)' }} />
+              ) : (
+                <div style={{ width: 28, height: 39, flexShrink: 0, background: 'var(--surface-2)', borderRadius: 2, border: '1px solid var(--border)' }} />
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: isScanned ? 'var(--success)' : isAssigned ? 'var(--primary)' : 'var(--text)' }}>
+                  {isScanned ? '✓ ' : isAssigned ? '● ' : ''}{comp.name ?? comp.display_key}
+                </div>
+                <div style={{ fontSize: 9, color: 'var(--text-dim)', display: 'flex', gap: 4 }}>
+                  {comp.qty > 1 && <span>×{comp.qty}</span>}
+                  {comp.finish === 'f' && <span style={{ color: 'var(--purple)' }}>foil</span>}
+                  {isAssigned && <span style={{ color: 'var(--primary)' }}>{assignedQty} in bins</span>}
+                </div>
+              </div>
             </div>
-            {comp.qty > 1 && <span style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>×{comp.qty}</span>}
-          </div>
-        ))}
+          )
+        })}
       </div>
-    </div>
+    </aside>
   )
 }
 
@@ -1341,59 +1396,6 @@ function SetManifest({ setName, scannedIds }: { setName: string; scannedIds: Set
   )
 }
 
-// ─── Deck Checklist ───────────────────────────────────────────────────────────
-
-function DeckChecklist({ manifest, scannedIds, loading }: { manifest: DeckManifest | null; scannedIds: Set<number>; loading: boolean }) {
-  if (loading) {
-    return (
-      <aside style={{ width: 220, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', background: 'var(--surface)' }}>
-        <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Deck List</div>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 12 }}>Loading…</div>
-      </aside>
-    )
-  }
-  if (!manifest) return null
-
-  const total = manifest.components.reduce((s, c) => s + c.qty, 0)
-  const scanned = manifest.components.filter(c => c.tcgplayer_product_id && scannedIds.has(parseInt(c.tcgplayer_product_id))).reduce((s, c) => s + c.qty, 0)
-
-  return (
-    <aside style={{ width: 220, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', background: 'var(--surface)' }}>
-      <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Deck List</div>
-        <div style={{ fontSize: 11, color: manifest.name ? 'var(--text)' : 'var(--text-dim)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{manifest.name}</div>
-        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>{scanned} / {total} cards scanned</div>
-        <div style={{ marginTop: 6, height: 4, background: 'var(--surface-2)', borderRadius: 2, overflow: 'hidden' }}>
-          <div style={{ height: '100%', width: `${total > 0 ? (scanned / total) * 100 : 0}%`, background: 'var(--primary)', borderRadius: 2, transition: 'width 0.3s' }} />
-        </div>
-      </div>
-      <div style={{ flex: 1, overflowY: 'auto' }}>
-        {manifest.components.map((comp, i) => {
-          const tcgId = comp.tcgplayer_product_id ? parseInt(comp.tcgplayer_product_id) : null
-          const isScanned = tcgId != null && scannedIds.has(tcgId)
-          const imgUrl = tcgId ? `https://tcgplayer-cdn.tcgplayer.com/product/${tcgId}_in_1000x1000.jpg` : undefined
-          return (
-            <div key={`${comp.display_key}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderBottom: '1px solid var(--border)', opacity: isScanned ? 0.5 : 1, transition: 'opacity 0.2s' }}>
-              {imgUrl ? (
-                <img src={imgUrl} alt="" onError={e => { e.currentTarget.style.display = 'none' }} style={{ width: 30, height: 42, objectFit: 'cover', borderRadius: 3, flexShrink: 0, border: isScanned ? '1px solid var(--success)' : '1px solid var(--border)' }} />
-              ) : (
-                <div style={{ width: 30, height: 42, flexShrink: 0, background: 'var(--surface-2)', borderRadius: 3, border: '1px solid var(--border)' }} />
-              )}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 10, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: isScanned ? 'var(--success)' : 'var(--text)' }}>
-                  {isScanned ? '✓ ' : ''}{comp.name ?? comp.display_key}
-                </div>
-                {comp.qty > 1 && <div style={{ fontSize: 9, color: 'var(--text-dim)' }}>×{comp.qty}</div>}
-                {comp.finish && comp.finish !== 'normal' && <div style={{ fontSize: 9, color: 'var(--purple)' }}>{comp.finish}</div>}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </aside>
-  )
-}
-
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -1412,6 +1414,8 @@ export default function App() {
   // Bins
   const [bins, setBins] = useState<Bin[]>([{ id: 'bin_1', name: 'Bin 1' }])
   const [renamingBinId, setRenamingBinId] = useState<string | null>(null)
+  const [manualEntries, setManualEntries] = useState<ManualBinEntry[]>([])
+  const [collapsedBins, setCollapsedBins] = useState<Set<string>>(new Set())
 
   // EV-calc CSV
   const [evCalcPrices, setEvCalcPrices] = useState<Map<number, number>>(new Map())
@@ -1582,13 +1586,41 @@ export default function App() {
 
   function removeBin(id: string) {
     const hasEntries = entriesRef.current.some(e => e.binId === id)
-    if (hasEntries && !confirm('This bin has scanned cards. Remove it anyway?')) return
+    const hasManual = manualEntries.some(e => e.binId === id)
+    if ((hasEntries || hasManual) && !confirm('This bin has cards. Remove it anyway?')) return
     setBins(prev => prev.filter(b => b.id !== id))
+    setManualEntries(prev => prev.filter(e => e.binId !== id))
+  }
+
+  function addManualEntry(binId: string, comp: DeckComponent) {
+    setManualEntries(prev => {
+      const existing = prev.find(e => e.displayKey === comp.display_key && e.binId === binId)
+      if (existing) return prev.map(e => e.id === existing.id ? { ...e, qty: e.qty + comp.qty } : e)
+      return [...prev, {
+        id: makeId(), binId, displayKey: comp.display_key,
+        cardName: comp.name ?? comp.display_key,
+        tcgplayerId: comp.tcgplayer_product_id ? parseInt(comp.tcgplayer_product_id) : undefined,
+        tcgplayerSkuId: comp.tcgplayer_sku_id,
+        finish: comp.finish ?? 'nf',
+        qty: comp.qty,
+      }]
+    })
+  }
+
+  function updateManualQty(id: string, qty: number) {
+    if (qty <= 0) { setManualEntries(prev => prev.filter(e => e.id !== id)); return }
+    setManualEntries(prev => prev.map(e => e.id === id ? { ...e, qty } : e))
+  }
+
+  function toggleBinCollapse(id: string) {
+    setCollapsedBins(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next })
   }
 
   const frontCount = entries.filter(e => e.status === 'done').length
   const acceptedCount = entries.filter(e => e.accepted && e.status === 'done').length
   const scannedIds = new Set(entries.filter(e => e.status === 'done' && e.tcgplayerId).map(e => e.tcgplayerId!))
+  const hasData = frontCount > 0 || manualEntries.length > 0
+  const hasPricing = evCalcPrices.size > 0
 
   const [inventoryPushing, setInventoryPushing] = useState(false)
   const [inventoryToken, setInventoryToken] = useState('')
@@ -1690,30 +1722,33 @@ export default function App() {
           Export CSV
         </button>
         <button
-          disabled={frontCount === 0}
-          onClick={() => downloadCSV(buildTCGPlayerCSV(entries, pricingSettings, gameRef.current, evCalcPrices), `tcgplayer-${setCode || 'export'}-${Date.now()}.csv`)}
-          style={{ background: frontCount === 0 ? 'var(--surface-2)' : 'rgba(99,102,241,0.2)', border: `1px solid ${frontCount === 0 ? 'var(--border)' : 'var(--primary)'}`, borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : 'var(--primary)', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
+          disabled={!hasData || !hasPricing}
+          onClick={() => downloadCSV(buildTCGPlayerCSV(entries, manualEntries, pricingSettings, gameRef.current, evCalcPrices), `tcgplayer-${setCode || 'export'}-${Date.now()}.csv`)}
+          title={!hasPricing ? 'Load a pricing CSV first' : undefined}
+          style={{ background: !hasData || !hasPricing ? 'var(--surface-2)' : 'rgba(99,102,241,0.2)', border: `1px solid ${!hasData || !hasPricing ? 'var(--border)' : 'var(--primary)'}`, borderRadius: 6, color: !hasData || !hasPricing ? 'var(--text-dim)' : 'var(--primary)', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: !hasData || !hasPricing ? 'not-allowed' : 'pointer' }}
         >
           TCGPlayer CSV
         </button>
         <button
-          disabled={frontCount === 0}
-          onClick={() => downloadCSV(buildManapoolCSV(entries, pricingSettings, gameRef.current, evCalcPrices, setCode), `manapool-${setCode || 'export'}-${Date.now()}.csv`)}
-          style={{ background: frontCount === 0 ? 'var(--surface-2)' : 'rgba(168,85,247,0.15)', border: `1px solid ${frontCount === 0 ? 'var(--border)' : 'rgba(168,85,247,0.4)'}`, borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : 'var(--purple)', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
+          disabled={!hasData || !hasPricing}
+          onClick={() => downloadCSV(buildManapoolCSV(entries, manualEntries, pricingSettings, gameRef.current, evCalcPrices, setCode), `manapool-${setCode || 'export'}-${Date.now()}.csv`)}
+          title={!hasPricing ? 'Load a pricing CSV first' : undefined}
+          style={{ background: !hasData || !hasPricing ? 'var(--surface-2)' : 'rgba(168,85,247,0.15)', border: `1px solid ${!hasData || !hasPricing ? 'var(--border)' : 'rgba(168,85,247,0.4)'}`, borderRadius: 6, color: !hasData || !hasPricing ? 'var(--text-dim)' : 'var(--purple)', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: !hasData || !hasPricing ? 'not-allowed' : 'pointer' }}
         >
           Manapool CSV
         </button>
         <button
-          disabled={frontCount === 0}
-          onClick={() => downloadCSV(buildInventoryCSV(entries, bins, evCalcPrices, 'tcgplayer'), `inventory-${setCode || 'export'}-${Date.now()}.csv`)}
-          style={{ background: frontCount === 0 ? 'var(--surface-2)' : 'rgba(34,197,94,0.15)', border: `1px solid ${frontCount === 0 ? 'var(--border)' : 'var(--success)'}`, borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : 'var(--success)', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
+          disabled={!hasData || !hasPricing}
+          onClick={() => downloadCSV(buildInventoryCSV(entries, manualEntries, bins, evCalcPrices, 'tcgplayer'), `inventory-${setCode || 'export'}-${Date.now()}.csv`)}
+          title={!hasPricing ? 'Load a pricing CSV first' : undefined}
+          style={{ background: !hasData || !hasPricing ? 'var(--surface-2)' : 'rgba(34,197,94,0.15)', border: `1px solid ${!hasData || !hasPricing ? 'var(--border)' : 'var(--success)'}`, borderRadius: 6, color: !hasData || !hasPricing ? 'var(--text-dim)' : 'var(--success)', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: !hasData || !hasPricing ? 'not-allowed' : 'pointer' }}
         >
           Inventory CSV
         </button>
         <button
-          disabled={frontCount === 0}
+          disabled={!hasData}
           onClick={() => setShowInvPush(p => !p)}
-          style={{ background: showInvPush ? 'rgba(168,85,247,0.2)' : 'var(--surface-2)', border: `1px solid ${showInvPush ? 'var(--purple)' : 'var(--border)'}`, borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : showInvPush ? 'var(--purple)' : 'var(--text-dim)', padding: '6px 14px', fontSize: 12, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
+          style={{ background: showInvPush ? 'rgba(168,85,247,0.2)' : 'var(--surface-2)', border: `1px solid ${showInvPush ? 'var(--purple)' : 'var(--border)'}`, borderRadius: 6, color: !hasData ? 'var(--text-dim)' : showInvPush ? 'var(--purple)' : 'var(--text-dim)', padding: '6px 14px', fontSize: 12, cursor: !hasData ? 'not-allowed' : 'pointer' }}
         >
           → Inventory
         </button>
@@ -1774,38 +1809,49 @@ export default function App() {
 
       {/* ── Body ── */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* Left panel: deck checklist or set manifest */}
+        {/* Left panel: deck card list or set manifest */}
         {deckDisplayKey && (deckManifest || manifestLoading) && (
-          <DeckChecklist manifest={deckManifest} scannedIds={scannedIds} loading={manifestLoading} />
+          <CardList manifest={deckManifest} scannedIds={scannedIds} manualEntries={manualEntries} loading={manifestLoading} onDragCard={() => {}} />
         )}
         {!deckDisplayKey && setCode && setName && (
           <SetManifest setName={setName} scannedIds={scannedIds} />
         )}
 
-        {/* Center: bin tabs + per-bin content */}
-        {/* Center: vertical bin panels — each bin IS a drop zone */}
+        {/* Center: vertical bin panels — each bin accepts image drops and card-list drags */}
         <main style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {/* Quick export for commander decks (shown above bins when no files dropped yet) */}
-          {deckDisplayKey && manifestLoading && entries.length === 0 && (
+          {deckDisplayKey && manifestLoading && entries.length === 0 && manualEntries.length === 0 && (
             <div style={{ fontSize: 13, color: 'var(--text-dim)', textAlign: 'center', padding: 16 }}>Loading deck manifest…</div>
-          )}
-          {deckDisplayKey && deckManifest && entries.length === 0 && (
-            <QuickExportPanel
-              manifest={deckManifest}
-              settings={pricingSettings}
-              evCalcPrices={evCalcPrices}
-              onScanInstead={() => { /* dropping files into any bin dismisses this */ }}
-            />
           )}
 
           {/* Bin panels */}
           {bins.map(bin => {
             const binEntries = entries.filter(e => e.binId === bin.id)
+            const binManual = manualEntries.filter(e => e.binId === bin.id)
             const doneCount = binEntries.filter(e => e.status === 'done').length
+            const collapsed = collapsedBins.has(bin.id)
+            const totalManualQty = binManual.reduce((s, e) => s + e.qty, 0)
+            const qtyBtn: React.CSSProperties = { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', width: 22, height: 22, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0 }
             return (
-              <div key={bin.id} style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--surface)', overflow: 'hidden' }}>
+              <div
+                key={bin.id}
+                style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--surface)', overflow: 'hidden' }}
+                onDragOver={e => { if (e.dataTransfer.types.includes('application/x-deck-component')) e.preventDefault() }}
+                onDrop={e => {
+                  const raw = e.dataTransfer.getData('application/x-deck-component')
+                  if (!raw) return
+                  e.preventDefault()
+                  try { addManualEntry(bin.id, JSON.parse(raw)) } catch { /* ignore */ }
+                }}
+              >
                 {/* Bin header — click name to rename */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 14px', background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
+                  <button
+                    onClick={() => toggleBinCollapse(bin.id)}
+                    title={collapsed ? 'Expand bin' : 'Collapse bin (prevents accidental drops)'}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-dim)', fontSize: 12, cursor: 'pointer', padding: '0 2px', lineHeight: 1, flexShrink: 0 }}
+                  >
+                    {collapsed ? '▶' : '▼'}
+                  </button>
                   {renamingBinId === bin.id ? (
                     <input
                       autoFocus
@@ -1823,35 +1869,70 @@ export default function App() {
                       {bin.name} <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 400 }}>✎</span>
                     </button>
                   )}
-                  {binEntries.length > 0 && (
-                    <span style={{ fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{doneCount}/{binEntries.length}</span>
-                  )}
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap', display: 'flex', gap: 6 }}>
+                    {totalManualQty > 0 && <span style={{ color: 'var(--primary)' }}>{totalManualQty} listed</span>}
+                    {doneCount > 0 && <span>{doneCount}/{binEntries.length} scanned</span>}
+                  </span>
                   {bins.length > 1 && (
                     <button onClick={() => removeBin(bin.id)} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', fontSize: 16, cursor: 'pointer', padding: '0 2px', lineHeight: 1, opacity: 0.5 }} title="Remove bin">×</button>
                   )}
                 </div>
-                {/* Drop zone */}
-                <div style={{ padding: '10px 12px', borderBottom: binEntries.length > 0 ? '1px solid var(--border)' : undefined }}>
-                  <DropZone onFiles={files => addFiles(files, bin.id)} />
-                </div>
-                {/* Review cards for this bin */}
-                {binEntries.length > 0 && (
-                  <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {binEntries.map(e => (
-                      <ReviewCard
-                        key={e.id}
-                        entry={e}
-                        allEntries={entries}
-                        filterSetName={setName || undefined}
-                        onAccept={handleAccept}
-                        onCorrect={handleCorrect}
-                        onOverride={handleOverride}
-                        imgScale={imgScale}
-                        pricingSettings={pricingSettings}
-                        game={gameRef.current}
-                      />
-                    ))}
-                  </div>
+                {/* Content (hidden when collapsed) */}
+                {!collapsed && (
+                  <>
+                    {/* Manual entries from card list */}
+                    {binManual.length > 0 && (
+                      <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {binManual.map(me => {
+                          const imgUrl = me.tcgplayerId ? `https://tcgplayer-cdn.tcgplayer.com/product/${me.tcgplayerId}_in_1000x1000.jpg` : undefined
+                          return (
+                            <div key={me.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', background: 'var(--surface-2)', borderRadius: 6 }}>
+                              {imgUrl && <img src={imgUrl} alt="" onError={e => { e.currentTarget.style.display = 'none' }} style={{ width: 28, height: 39, objectFit: 'cover', borderRadius: 2, flexShrink: 0, border: '1px solid var(--border)' }} />}
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 11, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{me.cardName}</div>
+                                {me.finish === 'f' && <span style={{ fontSize: 9, color: 'var(--purple)' }}>foil</span>}
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+                                <button onClick={() => updateManualQty(me.id, me.qty - 1)} style={qtyBtn}>−</button>
+                                <span style={{ fontSize: 12, fontWeight: 600, minWidth: 20, textAlign: 'center' }}>{me.qty}</span>
+                                <button onClick={() => updateManualQty(me.id, me.qty + 1)} style={qtyBtn}>+</button>
+                                <button onClick={() => updateManualQty(me.id, 0)} style={{ ...qtyBtn, color: 'var(--danger)', borderColor: 'transparent' }}>×</button>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                    {/* Empty hint */}
+                    {binManual.length === 0 && binEntries.length === 0 && (
+                      <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--text-dim)', textAlign: 'center', fontStyle: 'italic' }}>
+                        Drag cards from the deck list or drop images below
+                      </div>
+                    )}
+                    {/* Scan drop zone */}
+                    <div style={{ padding: '10px 12px', borderBottom: binEntries.length > 0 ? '1px solid var(--border)' : undefined }}>
+                      <DropZone onFiles={files => addFiles(files, bin.id)} />
+                    </div>
+                    {/* Review cards for this bin */}
+                    {binEntries.length > 0 && (
+                      <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {binEntries.map(e => (
+                          <ReviewCard
+                            key={e.id}
+                            entry={e}
+                            allEntries={entries}
+                            filterSetName={setName || undefined}
+                            onAccept={handleAccept}
+                            onCorrect={handleCorrect}
+                            onOverride={handleOverride}
+                            imgScale={imgScale}
+                            pricingSettings={pricingSettings}
+                            game={gameRef.current}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )
