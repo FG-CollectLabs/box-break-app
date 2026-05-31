@@ -135,6 +135,7 @@ interface DeckComponent {
   tcgplayer_product_id?: string
   tcgplayer_sku_id?: string
   finish?: string
+  rarity?: string
 }
 
 interface DeckManifest {
@@ -869,6 +870,9 @@ interface MarketSet {
 
 const BASIC_LAND_NAMES = new Set(['Plains', 'Island', 'Swamp', 'Mountain', 'Forest', 'Wastes', 'Snow-Covered Plains', 'Snow-Covered Island', 'Snow-Covered Swamp', 'Snow-Covered Mountain', 'Snow-Covered Forest'])
 
+const MTG_RARITY_ORDER: Record<string, number> = { mythic: 0, mythic_rare: 0, m: 0, rare: 1, r: 1, uncommon: 2, u: 2, common: 3, c: 3, land: 4, l: 4, token: 5, t: 5 }
+function compRarityOrder(r?: string): number { return r ? (MTG_RARITY_ORDER[r.toLowerCase()] ?? 6) : 6 }
+
 function CardList({ manifest, scannedIds, manualEntries, loading, onDragCard }: {
   manifest: DeckManifest | null
   scannedIds: Set<number>
@@ -878,8 +882,14 @@ function CardList({ manifest, scannedIds, manualEntries, loading, onDragCard }: 
 }) {
   const [search, setSearch] = useState('')
   const [hideBasics, setHideBasics] = useState(false)
+  const [hideAdded, setHideAdded] = useState(false)
   const [finishFilter, setFinishFilter] = useState<'all' | 'f' | 'nf'>('all')
-  const [sortBy, setSortBy] = useState<'name' | 'qty' | 'finish'>('name')
+  const [sortBy, setSortBy] = useState<'name' | 'qty' | 'finish' | 'rarity'>('name')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const lastClickedKey = useRef<string | null>(null)
+
+  // Clear selection when manifest changes
+  useEffect(() => { setSelected(new Set()); lastClickedKey.current = null }, [manifest])
 
   if (loading) return (
     <aside style={{ width: 230, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', background: 'var(--surface)' }}>
@@ -900,12 +910,45 @@ function CardList({ manifest, scannedIds, manualEntries, loading, onDragCard }: 
   let comps = manifest.components
   if (search) { const q = search.toLowerCase(); comps = comps.filter(c => (c.name ?? c.display_key).toLowerCase().includes(q)) }
   if (hideBasics) comps = comps.filter(c => !BASIC_LAND_NAMES.has(c.name ?? ''))
+  if (hideAdded) comps = comps.filter(c => (inBins.get(c.display_key) ?? 0) < c.qty)
   if (finishFilter !== 'all') comps = comps.filter(c => (c.finish ?? 'nf') === finishFilter)
   comps = [...comps].sort((a, b) => {
     if (sortBy === 'qty') return b.qty - a.qty
     if (sortBy === 'finish') return (a.finish ?? 'nf').localeCompare(b.finish ?? 'nf') || (a.name ?? '').localeCompare(b.name ?? '')
+    if (sortBy === 'rarity') return compRarityOrder(a.rarity) - compRarityOrder(b.rarity) || (a.name ?? '').localeCompare(b.name ?? '')
     return (a.name ?? a.display_key).localeCompare(b.name ?? b.display_key)
   })
+
+  function handleRowClick(e: React.MouseEvent, key: string) {
+    if (e.ctrlKey || e.metaKey) {
+      setSelected(prev => {
+        const next = new Set(prev)
+        if (next.has(key)) next.delete(key); else next.add(key)
+        lastClickedKey.current = key
+        return next
+      })
+    } else if (e.shiftKey) {
+      const anchorIdx = lastClickedKey.current != null ? comps.findIndex(c => c.display_key === lastClickedKey.current) : -1
+      const targetIdx = comps.findIndex(c => c.display_key === key)
+      if (anchorIdx >= 0 && targetIdx >= 0) {
+        const lo = Math.min(anchorIdx, targetIdx), hi = Math.max(anchorIdx, targetIdx)
+        setSelected(prev => { const next = new Set(prev); for (let i = lo; i <= hi; i++) next.add(comps[i].display_key); return next })
+      } else {
+        setSelected(new Set([key])); lastClickedKey.current = key
+      }
+    } else {
+      setSelected(new Set()); lastClickedKey.current = key
+    }
+  }
+
+  function handleDragStart(e: React.DragEvent, comp: DeckComponent) {
+    const dragComps = selected.has(comp.display_key) && selected.size > 1
+      ? comps.filter(c => selected.has(c.display_key))
+      : [comp]
+    e.dataTransfer.setData('application/x-deck-components', JSON.stringify(dragComps))
+    e.dataTransfer.effectAllowed = 'copy'
+    onDragCard(comp)
+  }
 
   const chipStyle: React.CSSProperties = { fontSize: 10, padding: '2px 7px', borderRadius: 10, border: '1px solid var(--border)', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }
 
@@ -915,6 +958,7 @@ function CardList({ manifest, scannedIds, manualEntries, loading, onDragCard }: 
       <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Deck List</div>
         <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+          {selected.size > 0 && <span style={{ color: 'var(--warning)' }}>{selected.size} selected · </span>}
           {assigned > 0 && <span style={{ color: 'var(--primary)' }}>{assigned} in bins · </span>}
           {scanned > 0 && <span style={{ color: 'var(--success)' }}>{scanned} scanned · </span>}
           {total} total
@@ -928,51 +972,66 @@ function CardList({ manifest, scannedIds, manualEntries, loading, onDragCard }: 
         {/* Filter chips */}
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <button onClick={() => setHideBasics(h => !h)} style={{ ...chipStyle, background: hideBasics ? 'rgba(99,102,241,0.2)' : 'var(--surface-2)', color: hideBasics ? 'var(--primary)' : 'var(--text-dim)', borderColor: hideBasics ? 'var(--primary)' : 'var(--border)' }}>−basics</button>
+          <button onClick={() => setHideAdded(h => !h)} style={{ ...chipStyle, background: hideAdded ? 'rgba(99,102,241,0.2)' : 'var(--surface-2)', color: hideAdded ? 'var(--primary)' : 'var(--text-dim)', borderColor: hideAdded ? 'var(--primary)' : 'var(--border)' }}>−added</button>
           <button onClick={() => setFinishFilter(f => f === 'f' ? 'all' : 'f')} style={{ ...chipStyle, background: finishFilter === 'f' ? 'rgba(168,85,247,0.2)' : 'var(--surface-2)', color: finishFilter === 'f' ? 'var(--purple)' : 'var(--text-dim)', borderColor: finishFilter === 'f' ? 'var(--purple)' : 'var(--border)' }}>foil</button>
           <button onClick={() => setFinishFilter(f => f === 'nf' ? 'all' : 'nf')} style={{ ...chipStyle, background: finishFilter === 'nf' ? 'rgba(168,85,247,0.2)' : 'var(--surface-2)', color: finishFilter === 'nf' ? 'var(--purple)' : 'var(--text-dim)', borderColor: finishFilter === 'nf' ? 'var(--purple)' : 'var(--border)' }}>non-foil</button>
         </div>
         {/* Sort */}
         <select value={sortBy} onChange={e => setSortBy(e.target.value as typeof sortBy)} style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '3px 6px', fontSize: 11, fontFamily: 'inherit' }}>
           <option value="name">Sort: A→Z</option>
+          <option value="rarity">Sort: rarity</option>
           <option value="finish">Sort: finish</option>
           <option value="qty">Sort: qty</option>
         </select>
+        {selected.size > 0 && (
+          <div style={{ fontSize: 10, color: 'var(--warning)', fontStyle: 'italic' }}>
+            {selected.size} selected — drag any to drop all · Ctrl+click to add/remove · Shift+click for range
+          </div>
+        )}
+        {selected.size === 0 && (
+          <div style={{ fontSize: 10, color: 'var(--text-dim)', fontStyle: 'italic' }}>Drag to bins · Ctrl/Shift+click to multi-select</div>
+        )}
       </div>
 
       {/* Card rows — draggable */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
-        <div style={{ fontSize: 10, color: 'var(--text-dim)', padding: '4px 10px', fontStyle: 'italic' }}>Drag cards into bins →</div>
-        {comps.map((comp, i) => {
+        {comps.map((comp) => {
           const tcgId = comp.tcgplayer_product_id ? parseInt(comp.tcgplayer_product_id) : null
           const isScanned = tcgId != null && scannedIds.has(tcgId)
           const assignedQty = inBins.get(comp.display_key) ?? 0
           const isAssigned = assignedQty > 0
+          const isSel = selected.has(comp.display_key)
           const imgUrl = tcgId ? `https://tcgplayer-cdn.tcgplayer.com/product/${tcgId}_in_1000x1000.jpg` : undefined
           return (
             <div
-              key={`${comp.display_key}-${i}`}
+              key={comp.display_key}
               draggable
-              onDragStart={e => {
-                e.dataTransfer.setData('application/x-deck-component', JSON.stringify(comp))
-                e.dataTransfer.effectAllowed = 'copy'
-                onDragCard(comp)
+              onClick={e => handleRowClick(e, comp.display_key)}
+              onDragStart={e => handleDragStart(e, comp)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 7, padding: '5px 8px',
+                borderBottom: '1px solid var(--border)', cursor: 'grab',
+                opacity: (isScanned || isAssigned) && !isSel ? 0.55 : 1,
+                transition: 'opacity 0.2s, background 0.1s', userSelect: 'none',
+                background: isSel ? 'rgba(99,102,241,0.15)' : 'transparent',
+                outline: isSel ? '1px solid rgba(99,102,241,0.5)' : 'none',
               }}
-              style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 8px', borderBottom: '1px solid var(--border)', cursor: 'grab', opacity: (isScanned || isAssigned) ? 0.55 : 1, transition: 'opacity 0.2s', userSelect: 'none' }}
-              title={`Drag to a bin — ${comp.name ?? comp.display_key}`}
+              title={`${comp.name ?? comp.display_key} — Ctrl+click to multi-select, Shift+click for range`}
             >
               {imgUrl ? (
-                <img src={imgUrl} alt="" onError={e => { e.currentTarget.style.display = 'none' }} style={{ width: 28, height: 39, objectFit: 'cover', borderRadius: 2, flexShrink: 0, border: isScanned ? '1px solid var(--success)' : isAssigned ? '1px solid var(--primary)' : '1px solid var(--border)' }} />
+                <img src={imgUrl} alt="" onError={e => { e.currentTarget.style.display = 'none' }} style={{ width: 28, height: 39, objectFit: 'cover', borderRadius: 2, flexShrink: 0, border: isSel ? '1px solid var(--primary)' : isScanned ? '1px solid var(--success)' : isAssigned ? '1px solid var(--primary)' : '1px solid var(--border)' }} />
               ) : (
-                <div style={{ width: 28, height: 39, flexShrink: 0, background: 'var(--surface-2)', borderRadius: 2, border: '1px solid var(--border)' }} />
+                <div style={{ width: 28, height: 39, flexShrink: 0, background: 'var(--surface-2)', borderRadius: 2, border: isSel ? '1px solid var(--primary)' : '1px solid var(--border)' }} />
               )}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 10, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: isScanned ? 'var(--success)' : isAssigned ? 'var(--primary)' : 'var(--text)' }}>
-                  {isScanned ? '✓ ' : isAssigned ? '● ' : ''}{comp.name ?? comp.display_key}
+                <div style={{ fontSize: 10, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: isSel ? 'var(--primary)' : isScanned ? 'var(--success)' : isAssigned ? 'var(--primary)' : 'var(--text)' }}>
+                  {isSel ? '☑ ' : isScanned ? '✓ ' : isAssigned ? '● ' : ''}{comp.name ?? comp.display_key}
                 </div>
                 <div style={{ fontSize: 9, color: 'var(--text-dim)', display: 'flex', gap: 4 }}>
                   {comp.qty > 1 && <span>×{comp.qty}</span>}
                   {comp.finish === 'f' && <span style={{ color: 'var(--purple)' }}>foil</span>}
-                  {isAssigned && <span style={{ color: 'var(--primary)' }}>{assignedQty} in bins</span>}
+                  {comp.rarity && <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>{comp.rarity.slice(0, 1).toUpperCase()}</span>}
+                  {isAssigned && <span style={{ color: 'var(--primary)' }}>{assignedQty}/{comp.qty} added</span>}
                 </div>
               </div>
             </div>
@@ -1835,12 +1894,12 @@ export default function App() {
               <div
                 key={bin.id}
                 style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--surface)', overflow: 'hidden' }}
-                onDragOver={e => { if (e.dataTransfer.types.includes('application/x-deck-component')) e.preventDefault() }}
+                onDragOver={e => { if (e.dataTransfer.types.includes('application/x-deck-components')) e.preventDefault() }}
                 onDrop={e => {
-                  const raw = e.dataTransfer.getData('application/x-deck-component')
+                  const raw = e.dataTransfer.getData('application/x-deck-components')
                   if (!raw) return
                   e.preventDefault()
-                  try { addManualEntry(bin.id, JSON.parse(raw)) } catch { /* ignore */ }
+                  try { for (const comp of JSON.parse(raw) as DeckComponent[]) addManualEntry(bin.id, comp) } catch { /* ignore */ }
                 }}
               >
                 {/* Bin header — click name to rename */}
