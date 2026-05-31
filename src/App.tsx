@@ -270,6 +270,12 @@ function tcgProductLine(game: string): string {
   return map[game] ?? ''
 }
 
+// Matches "Plains", "Forest (0319)", "Snow-Covered Island", etc.
+function isBasicLand(name: string): boolean {
+  const base = name.replace(/\s*\(\d+\).*$/, '').trim()
+  return BASIC_LAND_NAMES.has(base)
+}
+
 function buildTCGPlayerCSV(
   entries: BreakEntry[],
   manualEntries: ManualBinEntry[],
@@ -312,6 +318,7 @@ function buildTCGPlayerCSV(
   }
 
   for (const t of tally.values()) {
+    if (isBasicLand(t.name)) continue
     const listPrice = t.listCents > 0 ? (t.listCents / 100).toFixed(2) : ''
     rows.push([q(t.tcgId), q(productLine), q(t.set), q(t.name), '', q(t.number), '', q(t.condition), t.market, '', '', '', t.qty.toString(), '0', listPrice, ''].join(','))
   }
@@ -355,6 +362,7 @@ function buildManapoolCSV(
   }
 
   for (const t of tally.values()) {
+    if (isBasicLand(t.name)) continue
     const price = t.listCents > 0 ? (t.listCents / 100).toFixed(2) : ''
     rows.push(['mtg_single', '', q(t.name), t.set, t.number, '', 'EN', t.finish, 'NM', price, '', '', '', t.qty.toString()].join(','))
   }
@@ -881,7 +889,7 @@ function CardList({ manifest, scannedIds, manualEntries, loading, onDragCard }: 
   onDragCard: (comp: DeckComponent) => void
 }) {
   const [search, setSearch] = useState('')
-  const [hideBasics, setHideBasics] = useState(false)
+  const [hideBasics, setHideBasics] = useState(true)
   const [hideAdded, setHideAdded] = useState(false)
   const [finishFilter, setFinishFilter] = useState<'all' | 'f' | 'nf'>('all')
   const [sortBy, setSortBy] = useState<'name' | 'qty' | 'finish' | 'rarity'>('name')
