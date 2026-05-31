@@ -249,33 +249,34 @@ function buildCSV(entries: BreakEntry[]): string {
 
 // Quick-export: build TCGPlayer CSV directly from a deck manifest (no scanning needed).
 // Used for commander decks where the card list is fixed and known.
-function buildManifestTCGPlayerCSV(manifest: DeckManifest, settings: PricingSettings, evCalcPrices: Map<number, number> = new Map()): string {
-  // When SKU IDs are available they encode condition+printing, so we don't need those columns.
-  // We use SKU-based format when ALL components have a sku_id; otherwise fall back to product-id format.
-  const allHaveSKU = manifest.components.every(c => !!c.tcgplayer_sku_id)
+const TCG_CSV_HEADER = 'TCGplayer Id,Product Line,Set Name,Product Name,Title,Number,Rarity,Condition,TCG Market Price,TCG Direct Low,TCG Low Price With Shipping,TCG Low Price,Total Quantity,Add to Quantity,TCG Marketplace Price,Photo URL'
+
+function tcgProductLine(game: string): string {
+  const map: Record<string, string> = { mtg: 'Magic', pokemon: 'Pokémon', fab: 'Flesh and Blood', yugioh: 'Yu-Gi-Oh!', lorcana: 'Lorcana' }
+  return map[game] ?? ''
+}
+
+function buildManifestTCGPlayerCSV(manifest: DeckManifest, _settings: PricingSettings, evCalcPrices: Map<number, number> = new Map()): string {
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`
-
-  if (allHaveSKU) {
-    // TCGPlayer SKU-based mass entry: TCGplayer Id (SKU), Quantity, My Price
-    const rows: string[] = ['TCGplayer Id,Quantity,My Price']
-    for (const comp of manifest.components) {
-      const productId = comp.tcgplayer_product_id ? parseInt(comp.tcgplayer_product_id) : 0
-      const evCents = productId > 0 ? (evCalcPrices.get(productId) ?? 0) : 0
-      const price = evCents > 0 ? (evCents / 100).toFixed(2) : ''
-      rows.push([comp.tcgplayer_sku_id!, comp.qty.toString(), price].join(','))
-    }
-    return rows.join('\n')
-  }
-
-  // Fallback: product-id based format
-  const rows: string[] = ['Quantity,Product Name,Set Name,Number,TCGplayer Id,Condition,Printing,My Price']
   const tcgSetName = manifest.tcg_set_name ?? manifest.name
+  const rows: string[] = [TCG_CSV_HEADER]
+
   for (const comp of manifest.components) {
-    const printing = comp.finish === 'f' ? 'Foil' : 'Normal'
+    // TCGplayer Id: prefer SKU ID (encodes condition+printing) over product ID
+    const tcgId = comp.tcgplayer_sku_id ?? comp.tcgplayer_product_id ?? ''
     const productId = comp.tcgplayer_product_id ? parseInt(comp.tcgplayer_product_id) : 0
     const evCents = productId > 0 ? (evCalcPrices.get(productId) ?? 0) : 0
-    const price = evCents > 0 ? (evCents / 100).toFixed(2) : ''
-    rows.push([comp.qty.toString(), q(comp.name ?? comp.display_key), q(tcgSetName), '', comp.tcgplayer_product_id ?? '', q(settings.condition), q(printing), price].join(','))
+    const listPrice = evCents > 0 ? (evCents / 100).toFixed(2) : ''
+    const condition = comp.finish === 'f' ? 'Near Mint Foil' : 'Near Mint'
+    // display_key format: "mtg-tmc-1-f" → parts[2] = collector number
+    const parts = (comp.display_key ?? '').split('-')
+    const number = parts.length >= 4 ? parts[2] : ''
+    rows.push([
+      q(tcgId), q('Magic'), q(tcgSetName), q(comp.name ?? comp.display_key),
+      '', number, '', q(condition),
+      '', '', '', '',
+      comp.qty.toString(), '0', listPrice, '',
+    ].join(','))
   }
   return rows.join('\n')
 }
@@ -321,24 +322,30 @@ function buildManapoolCSV(entries: BreakEntry[], settings: PricingSettings, game
 
 function buildTCGPlayerCSV(entries: BreakEntry[], settings: PricingSettings, game: string, evCalcPrices: Map<number, number> = new Map()): string {
   const cards = groupEntries(entries)
-  const rows: string[] = ['Quantity,Product Name,Set Name,Number,TCGplayer Id,Condition,Printing,My Price']
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`
+  const productLine = tcgProductLine(game)
+  const rows: string[] = [TCG_CSV_HEADER]
   for (const card of cards) {
     const isFoil = card.cardName?.toLowerCase().includes('foil')
+    const condition = isFoil ? 'Near Mint Foil' : settings.condition
     const price = card.instances[0]?.front.price
-    // EV-calc CSV price takes precedence over computed price
+    const marketPrice = price?.tcgplayer ? (price.tcgplayer / 100).toFixed(2) : ''
     const evCents = card.tcgplayerId ? (evCalcPrices.get(card.tcgplayerId) ?? 0) : 0
     const listCents = evCents > 0 ? evCents : computeListPrice(price, game, settings)
     const listPrice = listCents > 0 ? (listCents / 100).toFixed(2) : ''
     rows.push([
-      card.instances.length.toString(),
-      q(card.cardName),
+      q(card.tcgplayerId?.toString() ?? ''),
+      q(productLine),
       q(card.setName ?? ''),
+      q(card.cardName),
+      '',
       q(card.cardNumber ?? ''),
-      card.tcgplayerId?.toString() ?? '',
-      q(settings.condition),
-      q(isFoil ? 'Foil' : 'Normal'),
+      '',
+      q(condition),
+      marketPrice, '', '', '',
+      card.instances.length.toString(), '0',
       listPrice,
+      '',
     ].join(','))
   }
   return rows.join('\n')
