@@ -280,6 +280,45 @@ function buildManifestTCGPlayerCSV(manifest: DeckManifest, settings: PricingSett
   return rows.join('\n')
 }
 
+// Manapool import CSV format (matches ev-calculator's buildManapoolCSV output).
+// product_id (Scryfall UUID) is optional — Manapool matches on name+set+number+finish without it.
+function buildManifestManapoolCSV(manifest: DeckManifest, evCalcPrices: Map<number, number> = new Map()): string {
+  const header = 'product_type,product_id,name,set,number,rarity,language,finish,condition,price,market_low,market_price,market_price_foil,quantity'
+  const q = (s: string) => `"${s.replace(/"/g, '""')}"`
+  const setCode = (manifest.set_code ?? '').toUpperCase()
+  const rows: string[] = [header]
+  for (const comp of manifest.components) {
+    if (!comp.name) continue
+    // display_key format: "mtg-tmc-1-f" → parts[2] = collector number
+    const parts = (comp.display_key ?? '').split('-')
+    const number = parts.length >= 4 ? parts[2] : ''
+    const finish = comp.finish === 'f' ? 'F' : 'NF'
+    const productId = comp.tcgplayer_product_id ? parseInt(comp.tcgplayer_product_id) : 0
+    const evCents = productId > 0 ? (evCalcPrices.get(productId) ?? 0) : 0
+    const price = evCents > 0 ? (evCents / 100).toFixed(2) : ''
+    rows.push(['mtg_single', '', q(comp.name), setCode, number, '', 'EN', finish, 'NM', price, '', '', '', comp.qty.toString()].join(','))
+  }
+  return rows.join('\n')
+}
+
+function buildManapoolCSV(entries: BreakEntry[], settings: PricingSettings, game: string, evCalcPrices: Map<number, number> = new Map(), setCodeHint = ''): string {
+  const header = 'product_type,product_id,name,set,number,rarity,language,finish,condition,price,market_low,market_price,market_price_foil,quantity'
+  const q = (s: string) => `"${s.replace(/"/g, '""')}"`
+  const cards = groupEntries(entries)
+  const rows: string[] = [header]
+  for (const card of cards) {
+    const isFoil = card.cardName?.toLowerCase().includes('foil')
+    const finish = isFoil ? 'F' : 'NF'
+    const price = card.instances[0]?.front.price
+    const evCents = card.tcgplayerId ? (evCalcPrices.get(card.tcgplayerId) ?? 0) : 0
+    const listCents = evCents > 0 ? evCents : computeListPrice(price, game, settings)
+    const listPrice = listCents > 0 ? (listCents / 100).toFixed(2) : ''
+    const set = setCodeHint.toUpperCase() || ''
+    rows.push(['mtg_single', '', q(card.cardName), set, q(card.cardNumber ?? ''), '', 'EN', finish, 'NM', listPrice, '', '', '', card.instances.length.toString()].join(','))
+  }
+  return rows.join('\n')
+}
+
 function buildTCGPlayerCSV(entries: BreakEntry[], settings: PricingSettings, game: string, evCalcPrices: Map<number, number> = new Map()): string {
   const cards = groupEntries(entries)
   const rows: string[] = ['Quantity,Product Name,Set Name,Number,TCGplayer Id,Condition,Printing,My Price']
@@ -832,18 +871,11 @@ function QuickExportPanel({ manifest, settings, evCalcPrices, onScanInstead }: {
         </button>
 
         <button
-          onClick={() => {
-            const rows = ['Product Name,Quantity,Finish']
-            const q = (s: string) => `"${s.replace(/"/g, '""')}"`
-            for (const comp of manifest.components) {
-              rows.push([q(comp.name ?? comp.display_key), comp.qty.toString(), q(comp.finish === 'f' ? 'Foil' : 'Normal')].join(','))
-            }
-            downloadCSV(rows.join('\n'), `manapool-${manifest.key}-${Date.now()}.csv`)
-          }}
+          onClick={() => downloadCSV(buildManifestManapoolCSV(manifest, evCalcPrices), `manapool-${manifest.key}-${Date.now()}.csv`)}
           style={{ background: 'rgba(168,85,247,0.15)', border: '1px solid rgba(168,85,247,0.4)', borderRadius: 8, color: 'var(--purple)', padding: '10px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 2 }}
         >
           <span>Manapool CSV</span>
-          <span style={{ fontSize: 10, fontWeight: 400, opacity: 0.8 }}>Name + quantity + finish · {total} lines</span>
+          <span style={{ fontSize: 10, fontWeight: 400, opacity: 0.8 }}>Manapool import format · {total} lines{evCalcPrices.size > 0 ? ' · prices loaded' : ''}</span>
         </button>
       </div>
 
@@ -1656,6 +1688,13 @@ export default function App() {
           style={{ background: frontCount === 0 ? 'var(--surface-2)' : 'rgba(99,102,241,0.2)', border: `1px solid ${frontCount === 0 ? 'var(--border)' : 'var(--primary)'}`, borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : 'var(--primary)', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
         >
           TCGPlayer CSV
+        </button>
+        <button
+          disabled={frontCount === 0}
+          onClick={() => downloadCSV(buildManapoolCSV(entries, pricingSettings, gameRef.current, evCalcPrices, setCode), `manapool-${setCode || 'export'}-${Date.now()}.csv`)}
+          style={{ background: frontCount === 0 ? 'var(--surface-2)' : 'rgba(168,85,247,0.15)', border: `1px solid ${frontCount === 0 ? 'var(--border)' : 'rgba(168,85,247,0.4)'}`, borderRadius: 6, color: frontCount === 0 ? 'var(--text-dim)' : 'var(--purple)', padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: frontCount === 0 ? 'not-allowed' : 'pointer' }}
+        >
+          Manapool CSV
         </button>
         <button
           disabled={frontCount === 0}
